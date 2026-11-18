@@ -53,6 +53,15 @@ my sub devno_property {
 my $devno_users = [
     [qr/^fba\d+$/, sub { return ('fba', devno_property($_[1])); }],
     [qr/^ckd\d+$/, sub { return ('ckd', devno_property($_[1])); }],
+    [
+        qr/^net\d+$/,
+        sub {
+            my ($key, $value) = @_;
+            # the model is the default key, 'qeth=<mac>' or 'model=qeth'
+            return if $value !~ m/(?:^|,)(?:model=)?qeth(?:[=,]|$)/;
+            return ('qeth', devno_property($value));
+        },
+    ],
 ];
 
 =head3 register_devno_user($key_re, $code)
