@@ -6430,7 +6430,7 @@ sub vm_stop_cleanup {
         PVE::QemuServer::QSD::quit($vmid)
             if PVE::QemuServer::Helpers::qsd_running_locally($vmid);
 
-        PVE::QemuServer::Console3270::stop_sessions($vmid);
+        PVE::QemuServer::Console3270::stop_sessions($vmid, $conf);
 
         # ensure that no dbus-vmstate helper is left running in any case
         # at this point, it should never be still running, so quiesce any warnings

@@ -147,7 +147,10 @@ sub start_sessions {
 }
 
 sub stop_sessions {
-    my ($vmid) = @_;
+    my ($vmid, $conf) = @_;
+
+    # the unit is bound to the scope of the VM anyway, this is to not depend on that
+    return if PVE::QemuServer::Helpers::get_vm_arch($conf) ne 's390x';
 
     eval { run_command(['/bin/systemctl', 'stop', unit_name($vmid)], quiet => 1, noerr => 1); };
 }
