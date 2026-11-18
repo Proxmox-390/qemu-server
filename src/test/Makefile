@@ -1,6 +1,6 @@
 all: test
 
-test: test_snapshot test_cfg_to_cmd test_cfg_to_cmd_aarch64 test_cfg_to_cmd_s390x test_hotplug test_hotplug_aarch64 test_hotplug_s390x test_pci_addr_conflicts test_pci_reservation test_qemu_img_convert test_migration test_restore_config test_parse_config test_memory test_raw_config_write test_api test_api_cloudinit_dump test_console test_qemu_binary test_machine_type test_ipl test_guest_panic
+test: test_snapshot test_cfg_to_cmd test_cfg_to_cmd_aarch64 test_cfg_to_cmd_s390x test_hotplug test_hotplug_aarch64 test_hotplug_s390x test_pci_addr_conflicts test_pci_reservation test_qemu_img_convert test_migration test_restore_config test_parse_config test_memory test_raw_config_write test_api test_api_cloudinit_dump test_console test_qemu_binary test_machine_type test_ipl test_guest_panic test_ccw_devno
 
 test_snapshot: run_snapshot_tests.pl
 	./run_snapshot_tests.pl
@@ -74,6 +74,9 @@ test_ipl: run_ipl_tests.pl
 
 test_guest_panic: run_guest_panic_tests.pl
 	./run_guest_panic_tests.pl
+
+test_ccw_devno: run_ccw_devno_tests.pl
+	./run_ccw_devno_tests.pl
 
 .PHONY: clean
 clean:
