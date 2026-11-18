@@ -178,6 +178,24 @@ sub console_socket {
     return "${var_run_tmpdir}/${vmid}.$console";
 }
 
+# The command that attaches the terminal to the console or serial port $iface of a VM, $escape is
+# the character code of the escape key (0 for none).
+sub get_terminal_command {
+    my ($vmid, $iface, $escape) = @_;
+
+    my $socket = console_socket($vmid, $iface);
+
+    if ($iface eq '3270') {
+        # c3270 talks TN3270 to the socket itself and has its own escape key (Ctrl+]). It
+        # emulates the largest 3270 model that fits the terminal (model 2 to 4).
+        return ['c3270', "U:$socket"];
+    }
+
+    my $options = 'raw,echo=0';
+    $options .= sprintf(',escape=0x%x', $escape) if $escape;
+    return ['socat', "UNIX-CONNECT:$socket", "STDIO,$options"];
+}
+
 sub vnc_socket {
     my ($vmid) = @_;
     return "${var_run_tmpdir}/$vmid.vnc";
