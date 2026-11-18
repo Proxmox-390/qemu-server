@@ -80,6 +80,33 @@ sub kvm_user_version {
     return $kvm_user_version->{$binary};
 }
 
+my $kvm_device_types = {};
+my $kvm_device_types_mtime = {};
+
+# Returns a hash with the names of the device types the QEMU binary supports.
+sub kvm_device_types {
+    my ($binary) = @_;
+
+    my $st = stat($binary) or die "unable to stat QEMU binary '$binary' - $!\n";
+
+    return $kvm_device_types->{$binary}
+        if $kvm_device_types->{$binary}
+        && ($kvm_device_types_mtime->{$binary} // -1) == $st->mtime;
+
+    my $types = {};
+    my $code = sub {
+        my $line = shift;
+        $types->{$1} = 1 if $line =~ m/^name "([^"]+)"/;
+    };
+
+    PVE::Tools::run_command([$binary, '-device', 'help'], outfunc => $code);
+
+    $kvm_device_types->{$binary} = $types;
+    $kvm_device_types_mtime->{$binary} = $st->mtime;
+
+    return $types;
+}
+
 # Paths and directories
 
 # FIXME: MAJOR VERSION: use /run/qemu-server everywhere instead of mixing /run and /var/run and rely
@@ -134,6 +161,21 @@ sub qsd_fuse_export_path {
 sub vm_pidfile_name {
     my ($vmid) = @_;
     return "${var_run_tmpdir}/$vmid.pid";
+}
+
+# The consoles of an s390x VM depend on its OS type. Linux uses the VT220 SCLP console ('sclp'),
+# where the firmware prints its messages too. Any other OS type gets the line-mode ('sclplm') and
+# the integrated 3270 ('3270') SCLP consoles of the mainframe operating systems instead. The first
+# one is the default console.
+sub get_s390x_consoles {
+    my ($conf) = @_;
+
+    return ($conf->{ostype} // 'other') =~ m/^l\d\d$/ ? ['sclp'] : ['sclplm', '3270'];
+}
+
+sub console_socket {
+    my ($vmid, $console) = @_;
+    return "${var_run_tmpdir}/${vmid}.$console";
 }
 
 sub vnc_socket {

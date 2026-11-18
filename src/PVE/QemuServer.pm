@@ -3350,6 +3350,29 @@ sub config_to_command {
     my @usbdevices = PVE::QemuServer::USB::get_usb_devices($conf, $bootorder, $machine_version);
     push @$devices, @usbdevices if @usbdevices;
 
+    # the SCLP consoles of s390x, which ones depends on the OS type
+    if ($arch eq 's390x') {
+        for my $console (PVE::QemuServer::Helpers::get_s390x_consoles($conf)->@*) {
+            my $socket = PVE::QemuServer::Helpers::console_socket($vmid, $console);
+            if ($console eq 'sclp') {
+                push @$devices, '-chardev', "socket,id=sclp,path=$socket,server=on,wait=off";
+                push @$devices, '-device', 'sclpconsole,chardev=sclp';
+            } elsif ($console eq 'sclplm') {
+                push @$devices, '-chardev', "socket,id=sclplm,path=$socket,server=on,wait=off";
+                push @$devices, '-device', 'sclplmconsole,chardev=sclplm';
+            } elsif ($console eq '3270') {
+                # not part of upstream QEMU, but of QEMU builds with mainframe support
+                if (!PVE::QemuServer::Helpers::kvm_device_types($kvm_binary)->{sclp3270console}) {
+                    log_warn("the installed QEMU has no integrated 3270 console (sclp3270console)");
+                    next;
+                }
+                push @$devices, '-chardev',
+                    "socket,id=sclp3270,path=$socket,server=on,wait=off,tn3270=on";
+                push @$devices, '-device', 'sclp3270console,chardev=sclp3270';
+            }
+        }
+    }
+
     # serial devices
     my $s390x_console_bus = 0;
     for (my $i = 0; $i < $MAX_SERIAL_PORTS; $i++) {
