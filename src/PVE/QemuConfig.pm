@@ -274,7 +274,12 @@ sub __snapshot_save_vmstate {
     $conf->{vmstate} = $statefile;
     $conf->{runningmachine} = $runningmachine;
     $conf->{runningcpu} = $runningcpu;
-    $conf->{'running-nets-host-mtu'} = $nets_host_mtu;
+    # empty without VirtIO NICs (s390x VMs with only qeth adapters), the option cannot be empty
+    if (length($nets_host_mtu)) {
+        $conf->{'running-nets-host-mtu'} = $nets_host_mtu;
+    } else {
+        delete $conf->{'running-nets-host-mtu'};
+    }
 
     return $statefile;
 }
