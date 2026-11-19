@@ -3349,6 +3349,25 @@ sub assert_s390x_option_supported {
     return;
 }
 
+# s390x hosts run s390x VMs only, they do not emulate other architectures.
+sub check_vm_arch_supported {
+    my ($arch) = @_;
+
+    return if !defined($arch) || $arch eq 's390x' || get_host_arch() ne 's390x';
+    die "architecture '$arch' is not supported, an s390x host runs s390x VMs only\n";
+}
+
+# The checks of a configuration that is restored (the backup may have been made before they
+# existed): the architecture, and the device numbers of the CCW devices of an s390x VM.
+sub check_restore_config {
+    my ($conf) = @_;
+
+    check_vm_arch_supported($conf->{arch});
+    PVE::QemuServer::CCW::check_devno_conflicts($conf, 1)
+        if PVE::QemuServer::Helpers::get_vm_arch($conf) eq 's390x';
+    return;
+}
+
 sub config_to_command {
     my ($storecfg, $vmid, $conf, $defaults, $options) = @_;
 
@@ -3392,6 +3411,7 @@ sub config_to_command {
     my $machine_conf = PVE::QemuServer::Machine::parse_machine($conf->{machine});
 
     my $arch = PVE::QemuServer::Helpers::get_vm_arch($conf);
+    check_vm_arch_supported($arch);
     my $kvm_binary = PVE::QemuServer::Helpers::get_command_for_arch($arch);
     my $kvmver = kvm_user_version($kvm_binary);
 
@@ -5059,6 +5079,10 @@ sub vmconfig_hotplug_pending {
         next if $selection && !$selection->{$opt};
         my $value = $conf->{pending}->{$opt};
         eval {
+            # the device numbers of the CCW devices must not overlap with the running ones
+            if ($arch eq 's390x' && $opt =~ m/^(?:net|fba|ckd|tape|terminal)\d+$/) {
+                PVE::QemuServer::CCW::check_devno_conflicts($conf, 1, { $opt => $value }, [$opt]);
+            }
             if ($opt eq 'hotplug') {
                 die "skip\n"
                     if ($value =~ /memory/) || ($conf->{hotplug} && $conf->{hotplug} =~ /memory/);
@@ -5264,6 +5288,10 @@ sub vmconfig_apply_pending {
     return if !scalar(keys %{ $conf->{pending} });
 
     drop_pending_meta($conf);
+
+    # the config the pending changes make must not have overlapping CCW device numbers
+    PVE::QemuServer::CCW::check_devno_conflicts($conf, 0)
+        if PVE::QemuServer::Helpers::get_vm_arch($conf) eq 's390x';
 
     my $add_apply_error = sub {
         my ($opt, $msg) = @_;
@@ -5701,20 +5729,6 @@ sub vm_migrate_get_nbd_disks {
 }
 
 # called in locked context by incoming migration
-# The user given name of a DASD volume (see PVE::QemuServer::DASD::dasd_volume_name()), for
-# example its VOLSER, or undef for a volume named by the storage (vm-<vmid>-disk-<n>).
-my sub dasd_name_of_volume {
-    my ($storecfg, $vmid, $volid) = @_;
-
-    return if !defined($volid);
-    my $volname = eval { (PVE::Storage::parse_volname($storecfg, $volid))[1] } // return;
-    my ($name) =
-        $volname =~ m/^vm-\Q$vmid\E-([A-Za-z0-9][A-Za-z0-9_-]{0,39})(?:\.(?:raw|qcow2|vmdk))?$/
-        or return;
-    return if $name =~ m/^disk-\d+$/ || $name eq 'cloudinit';
-    return $name;
-}
-
 # $ckd_headers: { <drive key> => <CKD header of the source volume> } for the CKD DASDs, see
 # PVE::QemuServer::DASD::ckd_volume_header_for_migration()
 sub vm_migrate_alloc_nbd_disks {
@@ -5749,23 +5763,13 @@ sub vm_migrate_alloc_nbd_disks {
             my $size = $drive->{size} / 1024;
 
             # DASDs keep their user given volume names, if still free on the target storage
-            my $newvolid;
-            if (PVE::QemuServer::Drive::drive_is_dasd($drive)) {
-                if (defined(my $name = dasd_name_of_volume($storecfg, $vmid, $volid))) {
-                    my $volname = PVE::QemuServer::DASD::dasd_volume_name(
-                        $storecfg, $storeid, $vmid, $format, $name,
-                    );
-                    $newvolid = eval {
-                        PVE::Storage::vdisk_alloc(
-                            $storecfg, $storeid, $vmid, $format, $volname, $size,
-                        );
-                    };
-                    warn "$opt: could not allocate volume '$volname', using another name - $@"
-                        if $@;
-                }
-            }
-            $newvolid //=
-                PVE::Storage::vdisk_alloc($storecfg, $storeid, $vmid, $format, undef, $size);
+            my $volume_name =
+                PVE::QemuServer::Drive::drive_is_dasd($drive)
+                ? PVE::QemuServer::DASD::volume_name_of_volid($volid)
+                : undef;
+            my $newvolid = PVE::QemuServer::DASD::alloc_named_volume(
+                $storecfg, $storeid, $vmid, $format, $volume_name, $size, $opt,
+            );
             push @$allocated, $newvolid;
 
             # the eckd-ccw device needs the header to start
@@ -7064,7 +7068,10 @@ my $parse_backup_hints = sub {
     };
 
     my $virtdev_hash = {};
+    my $volume_names = {};
+    my $conf_raw = '';
     while (defined(my $line = <$fh>)) {
+        $conf_raw .= $line;
         if ($line =~ m/^\#qmdump\#map:(\S+):(\S+):(\S*):(\S*):$/) {
             my ($virtdev, $devname, $storeid, $format) = ($1, $2, $3, $4);
             die "archive does not contain data for drive '$virtdev'\n"
@@ -7085,10 +7092,17 @@ my $parse_backup_hints = sub {
             $check_storage->($storeid, $scfg); # permission and content type check
 
             $virtdev_hash->{$virtdev} = $devinfo->{$devname};
-        } elsif ($line =~ m/^((?:ide|sata|scsi|fba)\d+):\s*(.*)\s*$/) {
+        } elsif ($line =~ m/^((?:ide|sata|scsi|fba|ckd)\d+):\s*(.*)\s*$/) {
             # the cloud-init drive of an s390x VM is an FBA DASD
             my $virtdev = $1;
-            my $drive = parse_drive($virtdev, $2);
+            my $drive = parse_drive($virtdev, $2) or next;
+
+            # DASDs keep the names of their volumes (like the VOLSER), from the current config,
+            # which comes before the snapshots
+            if (PVE::QemuServer::Drive::drive_is_dasd($drive) && !drive_is_cloudinit($drive)) {
+                my $name = PVE::QemuServer::DASD::volume_name_of_volid($drive->{file});
+                $volume_names->{$virtdev} //= $name if defined($name);
+            }
 
             if (drive_is_cloudinit($drive)) {
                 my ($storeid, $volname) = PVE::Storage::parse_volume_id($drive->{file});
@@ -7106,6 +7120,15 @@ my $parse_backup_hints = sub {
                 };
             }
         }
+    }
+
+    # before any volume is allocated: refuse what the restore would refuse at the end
+    my $backup_conf = parse_vm_config('backup/qemu-server/0.conf', $conf_raw);
+    check_restore_config($backup_conf);
+
+    for my $virtdev (keys %$volume_names) {
+        next if !$virtdev_hash->{$virtdev} || $virtdev_hash->{$virtdev}->{is_cloudinit};
+        $virtdev_hash->{$virtdev}->{'volume-name'} = $volume_names->{$virtdev};
     }
 
     return $virtdev_hash;
@@ -7140,8 +7163,17 @@ my $restore_allocate_devices = sub {
             }
         }
 
-        my $volid =
-            PVE::Storage::vdisk_alloc($storecfg, $storeid, $vmid, $d->{format}, $name, $alloc_size);
+        my $volid;
+        if (defined(my $volume_name = $d->{'volume-name'})) {
+            # a DASD keeps the name of its volume, if it is free
+            $volid = PVE::QemuServer::DASD::alloc_named_volume(
+                $storecfg, $storeid, $vmid, $d->{format}, $volume_name, $alloc_size, $virtdev,
+            );
+        } else {
+            $volid = PVE::Storage::vdisk_alloc(
+                $storecfg, $storeid, $vmid, $d->{format}, $name, $alloc_size,
+            );
+        }
 
         print STDERR "new volume ID is '$volid'\n";
         $d->{volid} = $volid;
@@ -7604,6 +7636,11 @@ sub restore_proxmox_backup_archive {
     }
 
     my $new_conf = restore_merge_config($conffile, $new_conf_raw, $options->{override_conf});
+    eval { check_restore_config($new_conf) };
+    if (my $err = $@) {
+        $restore_destroy_volumes->($storecfg, $virtdev_hash);
+        die $err;
+    }
     check_restore_permissions($rpcenv, $user, $new_conf);
     PVE::QemuConfig->write_config($vmid, $new_conf);
 
@@ -7773,6 +7810,11 @@ sub restore_external_archive {
     }
 
     my $new_conf = restore_merge_config($conffile, $new_conf_raw, $options->{override_conf});
+    eval { check_restore_config($new_conf) };
+    if (my $err = $@) {
+        $restore_destroy_volumes->($storecfg, $virtdev_hash);
+        die $err;
+    }
     check_restore_permissions($rpcenv, $user, $new_conf);
     PVE::QemuConfig->write_config($vmid, $new_conf);
 
@@ -8227,6 +8269,11 @@ sub restore_vma_archive {
     }
 
     my $new_conf = restore_merge_config($conffile, $new_conf_raw, $opts->{override_conf});
+    eval { check_restore_config($new_conf) };
+    if (my $err = $@) {
+        $restore_destroy_volumes->($cfg, $virtdev_hash);
+        die $err;
+    }
     check_restore_permissions($rpcenv, $user, $new_conf);
     PVE::QemuConfig->write_config($vmid, $new_conf);
 
@@ -8542,14 +8589,22 @@ sub clone_disk {
             $size = PVE::Storage::volume_size_info($storecfg, $drive->{file}, 10);
         }
         $source->{size} = $size;
-        $newvolid = PVE::Storage::vdisk_alloc(
-            $storecfg,
-            $storeid,
-            $newvmid,
-            $dst_format,
-            $name,
-            ($size / 1024),
-        );
+        if (defined($dest->{'volume-name'}) && !defined($name)) {
+            # an imported DASD keeps the name of its source volume, if it is free
+            $newvolid = PVE::QemuServer::DASD::alloc_named_volume(
+                $storecfg, $storeid, $newvmid, $dst_format, $dest->{'volume-name'},
+                ($size / 1024), $dst_drivename,
+            );
+        } else {
+            $newvolid = PVE::Storage::vdisk_alloc(
+                $storecfg,
+                $storeid,
+                $newvmid,
+                $dst_format,
+                $name,
+                ($size / 1024),
+            );
+        }
         push @$newvollist, $newvolid;
         $dest->{volid} = $newvolid;
 
