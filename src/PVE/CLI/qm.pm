@@ -1264,6 +1264,16 @@ my sub host_import_properties {
     return $props;
 }
 
+# Whether an import source is a copy of a guest, an OVA or OVF (a VM exported with 'export-ova'
+# may still run), rather than a guest moved to this node (ESXi): a copy gets new MAC addresses by
+# default.
+sub import_source_is_copy {
+    my ($storecfg, $source) = @_;
+
+    my $fmt = (eval { PVE::Storage::parse_volname($storecfg, $source) })[6] // '';
+    return $fmt =~ m/^ov[af]$/ || $source =~ m/\.ov[af]$/i ? 1 : 0;
+}
+
 __PACKAGE__->register_method({
     name => 'vm_import',
     path => 'vm-import',
@@ -1301,6 +1311,14 @@ __PACKAGE__->register_method({
                     default => 0,
                     description => "Show the create command and exit without doing anything.",
                 },
+                'unique-macs' => {
+                    type => 'boolean',
+                    optional => 1,
+                    description => "Give the network devices new MAC addresses instead of the"
+                        . " ones of the import source. Defaults to on for OVA and OVF"
+                        . " sources, which are copies (an export of a guest that may still"
+                        . " run), and off for the others (a guest moved from ESXi).",
+                },
                 delete => {
                     type => 'string',
                     format => 'pve-configid-list',
@@ -1333,8 +1351,9 @@ __PACKAGE__->register_method({
     code => sub {
         my ($param) = @_;
 
-        my ($vmid, $source, $storage, $format, $live_import, $dryrun, $delete) =
-            delete $param->@{qw(vmid source storage format live-import dryrun delete)};
+        my ($vmid, $source, $storage, $format, $live_import, $dryrun, $delete, $unique_macs) =
+            delete $param->@{
+                qw(vmid source storage format live-import dryrun delete unique-macs)};
 
         if (defined($format)) {
             $format = ",format=$format";
@@ -1347,8 +1366,10 @@ __PACKAGE__->register_method({
 
         my $create_args = $metadata->{'create-args'};
         if (my $netdevs = $metadata->{net}) {
+            $unique_macs //= import_source_is_copy($storecfg, $source);
             for my $net (keys $netdevs->%*) {
-                my $value = $netdevs->{$net};
+                my $value = { $netdevs->{$net}->%* };
+                delete $value->{macaddr} if $unique_macs;
                 $create_args->{$net} =
                     join(',', map { $_ . '=' . $value->{$_} } sort keys %$value);
             }
