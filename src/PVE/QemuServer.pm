@@ -8737,6 +8737,14 @@ sub clone_disk {
             );
             $ckd_header = undef if $use_drive_mirror;
         }
+        # An unused volume has no drive that tells whether it is a CKD image, only its header
+        # can. Cut the padding of one whose header has a cylinder count, like for a drive.
+        my $unused_ckd_header;
+        if ($unused) {
+            $unused_ckd_header = eval {
+                PVE::QemuServer::DASD::unused_ckd_copy_source_header($storecfg, $drive->{file});
+            };
+        }
 
         if (defined($dest->{'volume-name'}) && !defined($name)) {
             # an imported DASD keeps the name of its source volume, if it is free
@@ -8777,6 +8785,9 @@ sub clone_disk {
             );
             PVE::QemuServer::DASD::finish_ckd_import($storecfg, $newvolid, $ckd_header)
                 if $ckd_header;
+            PVE::QemuServer::DASD::fit_unused_ckd_volume(
+                $storecfg, $newvolid, $unused_ckd_header,
+            ) if $unused_ckd_header;
         }
     }
 
