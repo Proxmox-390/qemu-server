@@ -856,8 +856,12 @@ subtest 's390x: CKD DASDs are not resized' => sub {
     $rpcenv->set_user('root@pam');
     my $err = api_error('resize_vm', { disk => 'fba0', size => '+1G' });
     is(ref($err), '', 'resize of an FBA DASD is not refused by the parameter check');
-    like($err, qr/reached lock_config|tasks|worker/i, 'resize of an FBA DASD goes ahead')
-        or diag explain $err;
+    # the worker cannot be started in the test, on a build host without /var/log/pve it fails there
+    like(
+        $err,
+        qr!reached lock_config|tasks|worker|/var/log/pve!i,
+        'resize of an FBA DASD goes ahead',
+    ) or diag explain $err;
 };
 
 subtest 's390x hosts run s390x VMs only' => sub {
