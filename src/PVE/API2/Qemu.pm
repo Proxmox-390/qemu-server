@@ -59,6 +59,7 @@ use PVE::QemuServer::PCI;
 use PVE::QemuServer::QMPHelpers;
 use PVE::QemuServer::RNG;
 use PVE::QemuServer::RunState;
+use PVE::QemuServer::SclpFile;
 use PVE::QemuServer::SclpLog;
 use PVE::QemuServer::Tape;
 use PVE::QemuServer::USB;
@@ -1439,8 +1440,10 @@ my sub check_dir_perm {
 
     $rpcenv->check_vm_perm($authuser, $vmid, $pool, ['VM.Config.Disk']);
 
-    my $virtiofs = PVE::JSONSchema::parse_property_string('pve-qm-virtiofs', $value);
-    $rpcenv->check_full($authuser, "/mapping/dir/$virtiofs->{dirid}", ['Mapping.Use']);
+    # both kinds of shared folders use a directory mapping
+    my $format = $opt eq 'sclpfile' ? 'pve-qm-sclpfile' : 'pve-qm-virtiofs';
+    my $shared = PVE::JSONSchema::parse_property_string($format, $value);
+    $rpcenv->check_full($authuser, "/mapping/dir/$shared->{dirid}", ['Mapping.Use']);
 
     return 1;
 }
@@ -1455,6 +1458,8 @@ my sub check_vm_create_dir_perm {
         next if !$param->{$opt};
         check_dir_perm($rpcenv, $authuser, $vmid, $pool, $opt, $param->{$opt});
     }
+    check_dir_perm($rpcenv, $authuser, $vmid, $pool, 'sclpfile', $param->{sclpfile})
+        if $param->{sclpfile};
 
     return 1;
 }
@@ -1542,6 +1547,7 @@ my $check_vm_modify_config_perm = sub {
         next if PVE::QemuServer::is_valid_drivename($opt);
         next if $opt eq 'cdrom';
         next if $opt =~ m/^(?:unused|serial|usb|hostpci|virtiofs)\d+$/;
+        next if $opt eq 'sclpfile';
         next if $opt eq 'tags';
 
         if ($cpuoptions->{$opt} || $opt =~ m/^numa\d+$/) {
@@ -1950,6 +1956,10 @@ __PACKAGE__->register_method({
             my $arch = PVE::QemuServer::Helpers::get_vm_arch($param);
             PVE::QemuServer::assert_s390x_option_supported($arch, $_, $param->{$_})
                 for sort keys $param->%*;
+            raise_param_exc({ sclpfile => "only supported on s390x" })
+                if $param->{sclpfile} && $arch ne 's390x';
+            eval { PVE::QemuServer::IPL::assert_no_netboot_conflict($param) };
+            raise_param_exc({ netboot => "$@" }) if $@;
 
             PVE::QemuServer::Network::add_random_macs($param);
             normalize_ccw_devnos($param);
@@ -2895,18 +2905,32 @@ __PACKAGE__->register_method({
                 },
                 devno => {
                     description => "The CCW device number that IPLs (for SCSI devices, the one"
-                        . " of their virtio-scsi-ccw controller).",
+                        . " of their virtio-scsi-ccw controller). Not for the shared folder.",
                     type => 'string',
+                    optional => 1,
                 },
                 description => {
                     description => "Human readable description of the device.",
                     type => 'string',
+                },
+                files => {
+                    description => "For the shared folder with SCLP file access (key"
+                        . " 'sclpfile'): the names of the .ins files in its top directory on"
+                        . " the node, sorted, candidates for 'file' of the 'ipl' option. At"
+                        . " most the first 256 names. Empty without 'Mapping.Use' or"
+                        . " 'Mapping.Audit' on the directory mapping.",
+                    type => 'array',
+                    items => { type => 'string' },
+                    optional => 1,
                 },
             },
         },
     },
     code => sub {
         my ($param) = @_;
+
+        my $rpcenv = PVE::RPCEnvironment::get();
+        my $authuser = $rpcenv->get_user();
 
         my $conf = PVE::QemuConfig->load_config($param->{vmid});
         $conf = $get_config_with_pending->($conf);
@@ -2919,7 +2943,32 @@ __PACKAGE__->register_method({
             $conf, PVE::Storage::config(), $kvm_binary,
         );
 
-        return [map { { $_->%{qw(key type devno description)} } } $devices->@*];
+        my $res = [];
+        for my $device ($devices->@*) {
+            my $entry = {
+                map { $_ => $device->{$_} }
+                grep { defined($device->{$_}) } qw(key type devno description)
+            };
+            if ($device->{key} eq 'sclpfile') {
+                # the file names of a mapped directory are for those who may see or use it
+                my $sclpfile = PVE::QemuServer::SclpFile::parse_sclpfile($conf->{sclpfile});
+                my $allowed = $authuser eq 'root@pam' || $rpcenv->check_any(
+                    $authuser,
+                    "/mapping/dir/$sclpfile->{dirid}",
+                    ['Mapping.Use', 'Mapping.Audit'],
+                    1,
+                );
+                $entry->{files} =
+                    $allowed ? eval { PVE::QemuServer::SclpFile::get_ins_files($conf) } : [];
+                if (my $err = $@) {
+                    warn "sclpfile: unable to list the .ins files - $err";
+                    $entry->{files} = [];
+                }
+            }
+            push @$res, $entry;
+        }
+
+        return $res;
     },
 });
 
@@ -3525,7 +3574,7 @@ my $update_vm_api = sub {
                 check_rng_perm($rpcenv, $authuser, $vmid, undef, $opt, $val);
                 PVE::QemuConfig->add_to_pending_delete($conf, $opt, $force);
                 PVE::QemuConfig->write_config($vmid, $conf);
-            } elsif ($opt =~ m/^virtiofs\d$/) {
+            } elsif ($opt =~ m/^virtiofs\d$/ || $opt eq 'sclpfile') {
                 check_dir_perm($rpcenv, $authuser, $vmid, undef, $opt, $val);
                 PVE::QemuConfig->add_to_pending_delete($conf, $opt, $force);
                 PVE::QemuConfig->write_config($vmid, $conf);
@@ -3656,7 +3705,9 @@ my $update_vm_api = sub {
                 }
                 check_rng_perm($rpcenv, $authuser, $vmid, undef, $opt, $param->{$opt});
                 $conf->{pending}->{$opt} = $param->{$opt};
-            } elsif ($opt =~ m/^virtiofs\d$/) {
+            } elsif ($opt =~ m/^virtiofs\d$/ || $opt eq 'sclpfile') {
+                die "sclpfile: only supported on s390x\n"
+                    if $opt eq 'sclpfile' && $arch ne 's390x';
                 if (my $oldvalue = $conf->{$opt}) {
                     check_dir_perm($rpcenv, $authuser, $vmid, undef, $opt, $oldvalue);
                 }
@@ -3681,6 +3732,8 @@ my $update_vm_api = sub {
                     if $arch eq 's390x';
                 $conf->{pending}->{$opt} = $param->{$opt};
             } elsif ($opt eq 'netboot') {
+                PVE::QemuServer::IPL::assert_no_netboot_conflict(
+                    { $get_config_with_pending->($conf)->%*, $opt => $param->{$opt} });
                 my ($netboot, $cmdline) = fetch_netboot($storecfg, $param->{$opt});
                 if (defined($netboot)) {
                     $param->{$opt} = $netboot;
@@ -3754,6 +3807,8 @@ my $update_vm_api = sub {
                     PVE::QemuServer::IPL::check_ipl_config(
                         $get_config_with_pending->($conf), $storecfg,
                     );
+                    PVE::QemuServer::IPL::assert_no_netboot_conflict(
+                        $get_config_with_pending->($conf));
                 } elsif ($opt eq 'sclplm-syslog' || $opt eq 'sclplm-codepage') {
                     die "only s390x VMs have an SCLP line-mode console\n" if $arch ne 's390x';
                 } elsif ($opt eq 'sclp3270-model') {
