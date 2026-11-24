@@ -8,6 +8,7 @@ use warnings;
 
 use lib qw(..);
 
+use File::Temp qw(tempdir);
 use Storable qw(dclone);
 use Test::MockModule;
 use Test::More;
@@ -862,6 +863,187 @@ subtest 's390x: CKD DASDs are not resized' => sub {
         qr!reached lock_config|tasks|worker|/var/log/pve!i,
         'resize of an FBA DASD goes ahead',
     ) or diag explain $err;
+};
+
+# The shared folder with SCLP file access: s390x only, privileges on the directory mapping, the
+# IPL from an .ins file in it, and the .ins files for the choice of one.
+subtest 's390x: shared folder with SCLP file access' => sub {
+    my $stored;
+
+    $qemu_config_module->mock(
+        load_config => sub { return dclone($stored); },
+        lock_config => sub {
+            my ($class, $vmid, $code, @param) = @_;
+            return $code->(@param);
+        },
+        write_config => sub {
+            my ($class, $vmid, $conf) = @_;
+            $stored = dclone($conf);
+        },
+    );
+    my $qemu_server_module = Test::MockModule->new('PVE::QemuServer');
+    $qemu_server_module->mock(check_running => sub { return 1; }); # changes stay pending
+    $qemu_server_module->mock(vmconfig_hotplug_pending => sub { return; });
+    my $helpers_module = Test::MockModule->new('PVE::QemuServer::Helpers');
+    $helpers_module->mock(
+        kvm_device_ipl_methods => sub {
+            my ($binary, $types) = @_;
+            return { map { $_ => 'firmware' } @$types };
+        },
+    );
+    my $folder = tempdir(CLEANUP => 1);
+    for my $name (qw(640VM.INS generic.ins notes.txt)) {
+        open(my $fh, '>', "$folder/$name") or die "unable to create '$folder/$name' - $!\n";
+        close($fh);
+    }
+    my $mapping_module = Test::MockModule->new('PVE::Mapping::Dir');
+    $mapping_module->mock(
+        find_on_current_node => sub { return { node => 'localhost', path => $folder }; },
+    );
+
+    my $update = sub {
+        my ($param) = @_;
+        eval { PVE::API2::Qemu->update_vm({ node => 'localhost', vmid => 100, %$param }) };
+        return $@;
+    };
+    my $base = {
+        arch => 's390x',
+        ostype => 'other',
+        virtio0 => 'local:100/vm-100-disk-0.raw,size=8G',
+        pending => {},
+        snapshots => {},
+    };
+    my $netboot = 'url=https://mirror.example.com/generic.ins,kernel=local:snippets/a.kernel';
+
+    $rpcenv->set_user('root@pam');
+
+    $stored = { $base->%*, arch => 'x86_64' };
+    like($update->({ sclpfile => 'share0' }), qr/^sclpfile: only supported on s390x/, 'x86_64');
+    ok(!exists($stored->{pending}->{sclpfile}), 'x86_64: nothing set');
+
+    $stored = dclone($base);
+    like(
+        $update->({ ipl => 'sclpfile,file=640VM.INS' }),
+        qr/^ipl: the VM has no shared folder with SCLP file access/,
+        'IPL from the shared folder of a VM without one',
+    );
+    is($update->({ sclpfile => 'share0,readonly=0' }), '', 'shared folder set');
+    is($stored->{pending}->{sclpfile}, 'share0,readonly=0', 'shared folder pending');
+    like(
+        $update->({ ipl => 'sclpfile,file=cd1/640VM.INS' }),
+        qr/^ipl: file 'cd1\/640VM\.INS' must be a file in the top directory/,
+        'IPL from a file in a subdirectory',
+    );
+    like(
+        $update->({ ipl => 'sclpfile' }),
+        qr/^ipl: 'file' is required to IPL from the shared folder/,
+        'IPL from the shared folder without a file',
+    );
+    is($update->({ ipl => 'sclpfile,file=640VM.INS,loadparm=1' }), '', 'IPL from an .ins file');
+    is($stored->{pending}->{ipl}, 'sclpfile,file=640VM.INS,loadparm=1', 'IPL pending');
+    like(
+        $update->({ netboot => $netboot }),
+        qr/^netboot: cannot be used together with an IPL from the shared folder/,
+        'network boot when the VM IPLs from the shared folder',
+    );
+    ok(!exists($stored->{pending}->{netboot}), 'network boot not set');
+
+    $stored = { $base->%*, sclpfile => 'share0', netboot => $netboot };
+    like(
+        $update->({ ipl => 'sclpfile,file=640VM.INS' }),
+        qr/^netboot: cannot be used together with an IPL from the shared folder/,
+        'IPL from the shared folder when the VM has a network boot',
+    );
+    $stored->{pending}->{delete} = 'netboot'; # used once
+    is($update->({ ipl => 'sclpfile,file=640VM.INS' }), '', 'network boot that was used');
+
+    # the .ins files
+    $stored = { $base->%*, sclpfile => 'share0', virtiofs9 => 'ignored' };
+    my $list = sub {
+        return PVE::API2::Qemu->ipl_devices({ node => 'localhost', vmid => 100 });
+    };
+    is_deeply(
+        $list->(),
+        [
+            {
+                key => 'sclpfile',
+                type => 'sclpfileaccess',
+                description => 'Shared folder (SCLP file access) share0',
+                files => ['640VM.INS', 'generic.ins'],
+            },
+            {
+                key => 'virtio0',
+                type => 'virtio-blk-ccw',
+                devno => 'fe.0.000a',
+                description => 'disk local:100/vm-100-disk-0.raw',
+            },
+        ],
+        'IPL devices: the shared folder with its .ins files, no device number',
+    );
+    $stored = dclone($base);
+    is_deeply([map { $_->{key} } $list->()->@*], ['virtio0'], 'IPL devices: no shared folder');
+
+    # privileges
+    my $allowed = {};
+    my $rpcenv_module = Test::MockModule->new('PVE::RPCEnvironment');
+    $rpcenv_module->mock(
+        check_vm_perm => sub { return 1; },
+        check_full => sub {
+            my ($self, $user, $path, $privs) = @_;
+            die "Permission check failed ($path, " . join('|', @$privs) . ")\n"
+                if !$allowed->{$path};
+            return 1;
+        },
+        check_any => sub {
+            my ($self, $user, $path, $privs) = @_;
+            return $allowed->{$path};
+        },
+    );
+    $rpcenv->set_user('user@pve');
+
+    $stored = { $base->%*, sclpfile => 'share0' };
+    is_deeply(
+        [map { $_->{files} // () } $list->()->@*],
+        [[]],
+        'IPL devices: no file names without privileges on the directory mapping',
+    );
+    like(
+        $update->({ sclpfile => 'share1' }),
+        qr!^Permission check failed \(/mapping/dir/share0, Mapping\.Use\)!,
+        'change needs Mapping.Use on the present directory mapping',
+    );
+    like(
+        $update->({ delete => 'sclpfile' }),
+        qr!^Permission check failed \(/mapping/dir/share0, Mapping\.Use\)!,
+        'removal needs Mapping.Use on the directory mapping',
+    );
+    $allowed->{'/mapping/dir/share0'} = 1;
+    is_deeply(
+        [map { $_->{files} // () } $list->()->@*],
+        [['640VM.INS', 'generic.ins']],
+        'IPL devices: file names with privileges on the directory mapping',
+    );
+    like(
+        $update->({ sclpfile => 'share1' }),
+        qr!^Permission check failed \(/mapping/dir/share1, Mapping\.Use\)!,
+        'change needs Mapping.Use on the new directory mapping',
+    );
+    $allowed->{'/mapping/dir/share1'} = 1;
+    is($update->({ sclpfile => 'share1' }), '', 'change with Mapping.Use on both');
+    is($stored->{pending}->{sclpfile}, 'share1', 'change pending');
+    is($update->({ delete => 'sclpfile' }), '', 'removal with Mapping.Use');
+
+    eval {
+        PVE::QemuServer::check_mapping_access($rpcenv, 'user@pve', { sclpfile => 'share2' });
+    };
+    like(
+        $@,
+        qr!^Permission check failed \(/mapping/dir/share2, Mapping\.Use\)!,
+        'clone and restore need Mapping.Use on the directory mapping',
+    );
+
+    $rpcenv->set_user('root@pam');
+    mock_unreachable_config();
 };
 
 subtest 's390x hosts run s390x VMs only' => sub {

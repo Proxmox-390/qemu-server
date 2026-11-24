@@ -29,6 +29,7 @@ use PVE::QemuServer::Helpers;
 use PVE::QemuServer::Memory;
 use PVE::QemuServer::OVMF;
 use PVE::QemuServer::PCI;
+use PVE::QemuServer::SclpFile;
 use PVE::QemuServer;
 
 use base 'Exporter';
@@ -218,7 +219,8 @@ my $usb_map_config = {
     },
 };
 
-# one directory mapping per possible virtiofs entry, 'share0' to 'share9'
+# one directory mapping per possible virtiofs entry, 'share0' to 'share9', also used for the
+# shared folder with SCLP file access
 my $dir_map_config = {
     ids => {
         map { (
@@ -412,7 +414,8 @@ $qemu_server_helpers->mock(
         return { map { $_ => $methods->{$_} // 'none' } @$types };
     },
     kvm_device_types => sub {
-        return { map { $_ => 1 } qw(3590-ccw qeth-ccw sclp3270console x-terminal3270) };
+        return { map { $_ => 1 }
+            qw(3590-ccw qeth-ccw sclp3270console sclpfileaccess x-terminal3270) };
     },
     kvm_device_has_property => sub {
         my ($binary, $type, $property) = @_;
@@ -632,6 +635,15 @@ $mapping_dir_module->mock(
     },
     assert_valid => sub {
         return 1; # the mapped directories do not exist on the host running the tests
+    },
+);
+
+our $sclpfile_module = Test::MockModule->new("PVE::QemuServer::SclpFile");
+$sclpfile_module->mock(
+    file_exists => sub {
+        my ($path) = @_;
+        # the mapped directories do not exist: every file is there, except those named 'missing'
+        return $path !~ m|/missing[^/]*$|i;
     },
 );
 

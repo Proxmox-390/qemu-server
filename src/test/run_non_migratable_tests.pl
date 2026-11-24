@@ -37,6 +37,18 @@ my $tests = [
         expected => ['amd-sev'],
     },
     {
+        name => 'shared folder with SCLP file access blocks state, like virtiofs',
+        conf => { sclpfile => 'share0', virtiofs0 => 'share1' },
+        state => 1,
+        expected => ['virtiofs', 'sclpfile'],
+    },
+    {
+        name => 'shared folder with SCLP file access does not block offline migration',
+        conf => { sclpfile => 'share0,readonly=0' },
+        state => 0,
+        expected => [],
+    },
+    {
         name => 'confidential computing does not block offline migration',
         conf => { 'amd-sev' => 'type=std' },
         state => 0,
@@ -63,6 +75,35 @@ is(
     "Cannot live-migrate, snapshot (with RAM), or hibernate a VM with: amd-sev\n",
     'blockers refuse live migration, RAM snapshots and hibernation up front',
 );
+
+# The shared folder with SCLP file access is a mapped directory of the node, like virtiofs: an
+# offline migration needs the mapping on the target node.
+{
+    my $cluster = Test::MockModule->new('PVE::Cluster');
+    $cluster->mock(get_nodelist => sub { return ['node1', 'node2']; });
+    my $empty = { ids => {} };
+    my $pci_mapping = Test::MockModule->new('PVE::Mapping::PCI');
+    $pci_mapping->mock(config => sub { return $empty; });
+    my $usb_mapping = Test::MockModule->new('PVE::Mapping::USB');
+    $usb_mapping->mock(config => sub { return $empty; });
+    my $dir_mapping = Test::MockModule->new('PVE::Mapping::Dir');
+    my $media = { type => 'dir', map => ['node=node1,path=/mnt/media'] };
+    $dir_mapping->mock(config => sub { return { ids => { media => $media } }; });
+
+    my $conf = { sclpfile => 'media', net0 => 'virtio=BC:24:11:00:00:00,bridge=vmbr0' };
+    for my $state (0, 1) {
+        my ($local, $mapped, $missing) =
+            PVE::QemuMigrate::Helpers::check_local_resources($conf, $state, 1);
+        my $what = $state ? 'running' : 'stopped';
+        is_deeply($local, ['sclpfile'], "$what VM: the shared folder is a local resource");
+        is_deeply($mapped, { sclpfile => { name => 'media' } }, "$what VM: a mapped one");
+        is_deeply(
+            $missing,
+            { node1 => [], node2 => ['sclpfile'] },
+            "$what VM: nodes without the directory mapping",
+        );
+    }
+}
 
 # /proc/sysinfo of s390x nodes: does the node run as a KVM guest (nested KVM)?
 my $lpar = <<'EOF';

@@ -558,9 +558,15 @@ my sub qmp_command($execute, %arguments) {
         }
         delete $vm_state->{objects}->{$id};
     } elsif ($execute eq 'qom-set') {
-        my $object = $vm_state->{objects}->{ $arguments{path} };
-        die "Object '$arguments{path}' not found" if !$object;
-        $object->{ $arguments{property} } = $arguments{value};
+        if (my ($qdev) = $arguments{path} =~ m|^/machine/peripheral/([^/]+)$|) {
+            # a property of a device
+            die "Device '$qdev' not found" if !$devices->{$qdev};
+            $devices->{$qdev}->{ $arguments{property} } = $arguments{value};
+        } else {
+            my $object = $vm_state->{objects}->{ $arguments{path} };
+            die "Object '$arguments{path}' not found" if !$object;
+            $object->{ $arguments{property} } = $arguments{value};
+        }
     } elsif ($execute eq 'blockdev-add') {
         die "Duplicate nodes with node-name='$node_name'"
             if $vm_state->{blocknodes}->{$node_name};

@@ -1,0 +1,1 @@
+qmp qom-set {"path":"/machine/peripheral/sclpfile","property":"path","value":"/mnt/share1"}
