@@ -35,6 +35,7 @@ use PVE::QemuServer::CCW;
 use PVE::QemuServer::DASD;
 use PVE::QemuServer::Drive;
 use PVE::QemuServer::Helpers;
+use PVE::QemuServer::IPL;
 use PVE::QemuServer::Memory;
 use PVE::QemuServer::Network;
 use PVE::QemuServer::Tape;
@@ -518,6 +519,8 @@ sub ovf_descriptor {
         my $value = $conf->{$key};
         # s390x VMs (mostly DASDs) carry the SCSI controller only if they have SCSI disks
         next if $key eq 'scsihw' && $arch eq 's390x' && !grep { m/^scsi\d+$/ } keys %exported;
+        # the shared folder is a directory of the node and not exported
+        next if $key eq 'ipl' && PVE::QemuServer::IPL::config_ipl_from_file($conf);
         if ($key eq 'boot') {
             # only the devices that are exported
             next if $value !~ m/^order=([^,]*)$/;

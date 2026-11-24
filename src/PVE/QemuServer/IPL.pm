@@ -1,7 +1,9 @@
 package PVE::QemuServer::IPL;
 
 # IPL (initial program load) of s390x VMs with a mainframe operating system: the VM is started
-# from one CCW device, selected with the 'ipl' option, instead of the boot order.
+# from one CCW device, selected with the 'ipl' option, instead of the boot order. Or from an .ins
+# file in the shared folder with SCLP file access, which lists the files to load, like "load from
+# removable media or server" of the HMC.
 
 use strict;
 use warnings;
@@ -14,17 +16,30 @@ use PVE::QemuServer::DriveDevice qw(scsihw_infos);
 use PVE::QemuServer::Helpers;
 use PVE::QemuServer::Network;
 use PVE::QemuServer::PCI qw(print_pci_addr);
+use PVE::QemuServer::SclpFile;
 use PVE::QemuServer::Tape;
 
 my $ipl_fmt = {
     device => {
         default_key => 1,
         type => 'string',
-        pattern => '[a-z]+\d+',
+        pattern => '(?:[a-z]+\d+|sclpfile)',
         format_description => 'device',
         description =>
             "The device to IPL from, the key of a disk, DASD, CD-ROM drive, tape drive"
-            . " or network device of the VM whose QEMU device can IPL, for example 'virtio0'.",
+            . " or network device of the VM whose QEMU device can IPL, for example 'virtio0'."
+            . " Or 'sclpfile', to load the system from the .ins file 'file' in the shared"
+            . " folder with SCLP file access.",
+    },
+    file => {
+        optional => 1,
+        type => 'string',
+        pattern => $PVE::QemuServer::SclpFile::INS_FILE_NAME_PATTERN,
+        maxLength => 255,
+        format_description => 'name.ins',
+        description => "The .ins file to load the system from, for the device 'sclpfile': the"
+            . " name of a file in the top directory of the shared folder, which lists the"
+            . " files to load, as on the installation media of mainframe operating systems.",
     },
     loadparm => {
         optional => 1,
@@ -52,7 +67,9 @@ my sub virtio_devno {
 # The devices of a VM config that the QEMU binary can IPL from, sorted by key. Each entry has the
 # config 'key', the QEMU device 'type' qemu-server generates for it, the 'devno' of its CCW device
 # (for SCSI devices, that of their virtio-scsi-ccw controller), the 'ipl-method' the QEMU binary
-# reports for the type (see kvm_device_ipl_methods()) and a 'description'.
+# reports for the type (see kvm_device_ipl_methods()) and a 'description'. The shared folder with
+# SCLP file access is the entry 'sclpfile', without 'devno' and with the 'ipl-method' 'file': the
+# system is loaded from an .ins file in it.
 sub get_ipl_devices {
     my ($conf, $storecfg, $kvm_binary) = @_;
 
@@ -137,6 +154,20 @@ sub get_ipl_devices {
     $_->{'ipl-method'} = $methods->{ $_->{type} } for @$res;
     $res = [grep { defined($_->{devno}) && $_->{'ipl-method'} ne 'none' } @$res];
 
+    my $sclpfile =
+        $conf->{sclpfile}
+        ? eval { PVE::QemuServer::SclpFile::parse_sclpfile($conf->{sclpfile}) }
+        : undef;
+    if ($sclpfile) {
+        push @$res,
+            {
+                key => 'sclpfile',
+                type => 'sclpfileaccess',
+                'ipl-method' => 'file',
+                description => "Shared folder (SCLP file access) $sclpfile->{dirid}",
+            };
+    }
+
     return [sort { $a->{key} cmp $b->{key} } @$res];
 }
 
@@ -149,6 +180,15 @@ sub check_ipl_config {
 
     die "ipl: only supported on s390x\n"
         if PVE::QemuServer::Helpers::get_vm_arch($conf) ne 's390x';
+    if ($key eq 'sclpfile') {
+        die "ipl: 'file' is required to IPL from the shared folder, the .ins file to load\n"
+            if !defined($ipl->{file});
+        die "ipl: the VM has no shared folder with SCLP file access ('sclpfile')\n"
+            if !$conf->{sclpfile};
+        PVE::QemuServer::SclpFile::assert_ins_file_name($ipl->{file});
+    } elsif (defined($ipl->{file})) {
+        die "ipl: 'file' is only for an IPL from the shared folder (device 'sclpfile')\n";
+    }
     die "ipl: device '$key' does not exist\n" if !$conf->{$key};
 
     $kvm_binary //= PVE::QemuServer::Helpers::get_command_for_arch('s390x');
@@ -156,6 +196,32 @@ sub check_ipl_config {
     die "ipl: cannot IPL from '$key'\n" if !$device;
 
     return ($ipl, $device);
+}
+
+# Whether the 'ipl' option of a config loads the system from an .ins file in the shared folder.
+sub config_ipl_from_file {
+    my ($conf) = @_;
+
+    return 0 if !$conf->{ipl};
+    my $ipl = eval { parse_ipl($conf->{ipl}) } or return 0;
+    return $ipl->{device} eq 'sclpfile' ? 1 : 0;
+}
+
+# The network boot and an IPL from an .ins file in the shared folder both make QEMU load files
+# instead of an IPL from a device: only one of them.
+sub assert_no_netboot_conflict {
+    my ($conf) = @_;
+
+    die "netboot: cannot be used together with an IPL from the shared folder ('ipl' with the"
+        . " device 'sclpfile'), remove one of them\n"
+        if $conf->{netboot} && config_ipl_from_file($conf);
+    return;
+}
+
+# The 'file' IPL method loads the files listed by an .ins file, no device is selected.
+sub ipl_from_file {
+    my ($device) = @_;
+    return $device->{'ipl-method'} eq 'file';
 }
 
 # Devices with the 'firmware' IPL method IPL through the s390-ccw firmware, selected with bootindex.

@@ -427,7 +427,9 @@ EODESC
         type => 'string',
         format => 'pve-qm-ipl',
         description => "The device to IPL (boot) an s390x VM from, with an optional load"
-            . " parameter, instead of the boot order.",
+            . " parameter, instead of the boot order. With the device 'sclpfile', the system"
+            . " is loaded from an .ins file in the shared folder with SCLP file access, as"
+            . " from installation media. Not used together with 'netboot'.",
     },
     'sclplm-syslog' => $PVE::QemuServer::SclpLog::syslog_desc,
     'sclplm-codepage' => $PVE::QemuServer::SclpLog::codepage_desc,
@@ -3702,6 +3704,7 @@ sub config_to_command {
     if ($conf->{netboot} && !$is_template) {
         die "netboot: only supported on s390x\n" if $arch ne 's390x';
         # QEMU loads the kernel instead of an IPL, a re-IPL by the guest uses its IPL device
+        PVE::QemuServer::IPL::assert_no_netboot_conflict($conf);
         push $devices->@*, PVE::QemuServer::Netboot::get_command_args($storecfg, $conf)->@*;
         log_warn("ignoring 'ipl' for the network boot") if $conf->{ipl};
     } elsif ($arch eq 's390x' && !$conf->{ipl}) {
@@ -3712,7 +3715,16 @@ sub config_to_command {
     } elsif ($conf->{ipl}) {
         my ($ipl, $device) = PVE::QemuServer::IPL::check_ipl_config($conf, $storecfg, $kvm_binary);
         my $loadparm = length($ipl->{loadparm} // '') ? $ipl->{loadparm} : undef;
-        if (PVE::QemuServer::IPL::ipl_with_bootindex($device)) {
+        if (PVE::QemuServer::IPL::ipl_from_file($device)) {
+            # QEMU loads the files listed by the .ins file instead of an IPL from a device, so
+            # no device gets a bootindex; the system reads the load parameter of the machine
+            $bootorder = {};
+            if (!$is_template) {
+                push $devices->@*, '-kernel',
+                    PVE::QemuServer::SclpFile::get_ins_file_path($conf, $ipl->{file});
+                push $machineFlags->@*, "loadparm=$loadparm" if defined($loadparm);
+            }
+        } elsif (PVE::QemuServer::IPL::ipl_with_bootindex($device)) {
             $bootorder = { $device->{key} => 1 };
             $ipl_loadparm->{ $device->{key} } = $loadparm if defined($loadparm);
         } else {
