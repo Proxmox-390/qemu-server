@@ -5272,6 +5272,11 @@ sub vmconfig_hotplug_pending {
                     if !PVE::QemuServer::Tape::change_medium(
                         $storecfg, $vmid, $opt, $conf->{$opt}, $value,
                     );
+            } elsif ($opt eq 'sclpfile') {
+                # the present device can be given another directory, the rest waits for a restart
+                die "skip\n" if !defined($conf->{$opt});
+                die "skip\n"
+                    if !PVE::QemuServer::SclpFile::change_directory($vmid, $conf->{$opt}, $value);
             } elsif (is_valid_drivename($opt)) {
                 die "skip\n" if $opt eq 'efidisk0' || $opt eq 'tpmstate0';
                 die "skip\n" if $opt =~ m/^(?:fba|ckd)\d+$/; # DASDs (s390x) cannot be hot-plugged
