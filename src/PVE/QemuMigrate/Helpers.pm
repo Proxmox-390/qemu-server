@@ -12,6 +12,7 @@ use PVE::Mapping::PCI;
 use PVE::Mapping::USB;
 
 use PVE::QemuServer::Monitor qw(mon_cmd);
+use PVE::QemuServer::SclpFile;
 use PVE::QemuServer::Virtiofs;
 
 sub check_non_migratable_resources {
@@ -22,6 +23,8 @@ sub check_non_migratable_resources {
         push @blockers, "amd-sev" if $conf->{"amd-sev"};
         push @blockers, "intel-tdx" if $conf->{"intel-tdx"};
         push @blockers, "virtiofs" if PVE::QemuServer::Virtiofs::virtiofs_enabled($conf);
+        # a directory of the node, like virtiofs
+        push @blockers, "sclpfile" if $conf->{sclpfile};
     }
 
     if (scalar(@blockers) && !$noerr) {
@@ -102,6 +105,12 @@ sub check_local_resources {
             my $entry = parse_property_string('pve-qm-virtiofs', $conf->{$k});
             $add_missing_mapping->('dir', $k, $entry->{dirid});
             $mapped_res->{$k} = { name => $entry->{dirid} };
+        }
+        if ($k eq 'sclpfile') {
+            my $entry = PVE::QemuServer::SclpFile::parse_sclpfile($conf->{$k});
+            $add_missing_mapping->('dir', $k, $entry->{dirid});
+            $mapped_res->{$k} = { name => $entry->{dirid} };
+            push @loc_res, $k if !grep { $_ eq $k } @loc_res; # also a blocker with state
         }
         # sockets are safe: they will recreated be on the target side post-migrate
         next if $k =~ m/^serial/ && ($conf->{$k} eq 'socket');

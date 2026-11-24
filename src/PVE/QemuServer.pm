@@ -105,6 +105,7 @@ use PVE::QemuServer::QMPHelpers
 use PVE::QemuServer::QSD;
 use PVE::QemuServer::RNG qw(parse_rng print_rng_device_commandline print_rng_object_commandline);
 use PVE::QemuServer::RunState;
+use PVE::QemuServer::SclpFile;
 use PVE::QemuServer::SclpLog;
 use PVE::QemuServer::StateFile;
 use PVE::QemuServer::Tape;
@@ -433,6 +434,7 @@ EODESC
     'sclp3270-model' => $PVE::QemuServer::Console3270::sclp3270_model_desc,
     netboot => $PVE::QemuServer::Netboot::netboot_desc,
     'netboot-cmdline' => $PVE::QemuServer::Netboot::netboot_cmdline_desc,
+    sclpfile => $PVE::QemuServer::SclpFile::sclpfile_desc,
     bootdisk => {
         optional => 1,
         type => 'string',
@@ -3781,6 +3783,10 @@ sub config_to_command {
         PVE::QemuServer::Tape::get_command_args($storecfg, $conf, $arch, $kvm_binary)->@*
         if !$is_template;
 
+    # shared folder with SCLP file access of s390x VMs
+    push $devices->@*, PVE::QemuServer::SclpFile::get_command_args($conf, $arch, $kvm_binary)->@*
+        if !$is_template;
+
     # local 3270 terminals of s390x, one TN3270 socket each
     for (my $i = 0; $i < $PVE::QemuServer::Helpers::MAX_TERMINALS; $i++) {
         my $opt = "terminal$i";
@@ -7065,6 +7071,9 @@ sub check_mapping_access {
         } elsif ($opt =~ m/^virtiofs\d$/) {
             my $virtiofs = PVE::JSONSchema::parse_property_string('pve-qm-virtiofs', $conf->{$opt});
             $rpcenv->check_full($user, "/mapping/dir/$virtiofs->{dirid}", ['Mapping.Use']);
+        } elsif ($opt eq 'sclpfile') {
+            my $sclpfile = PVE::QemuServer::SclpFile::parse_sclpfile($conf->{$opt});
+            $rpcenv->check_full($user, "/mapping/dir/$sclpfile->{dirid}", ['Mapping.Use']);
         }
     }
 }
