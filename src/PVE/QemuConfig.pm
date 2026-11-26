@@ -232,6 +232,13 @@ sub __snapshot_save_vmstate {
     # RAM snapshot or hibernation
     PVE::QemuServer::Helpers::warn_ram_save_on_nested_kvm($conf);
 
+    # tape media are not part of snapshots: after a rollback, the drive is at the saved position
+    # of a medium the guest may have written since
+    if (!$suspend && (my @keys = PVE::QemuServer::Tape::writable_media($conf)->@*)) {
+        log_warn("writable tape media in " . join(', ', @keys) . " are not part of the snapshot,"
+            . " a rollback does not undo what the guest wrote to them");
+    }
+
     # use given storage or search for one from the config
     my $target = $statestorage;
 

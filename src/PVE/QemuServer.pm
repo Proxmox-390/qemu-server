@@ -5270,7 +5270,7 @@ sub vmconfig_hotplug_pending {
                 die "skip\n" if !defined($conf->{$opt});
                 die "skip\n"
                     if !PVE::QemuServer::Tape::change_medium(
-                        $storecfg, $vmid, $opt, $conf->{$opt}, $value,
+                        $storecfg, $vmid, $conf, $opt, $conf->{$opt}, $value,
                     );
             } elsif ($opt eq 'sclpfile') {
                 # the present device can be given another directory, the rest waits for a restart
@@ -6206,6 +6206,9 @@ sub vm_start_nolock {
         # Plugins can safely deactivate already-active volumes here if needed
         my $storage_hints = generate_storage_hints($conf, 1);
         PVE::Storage::activate_volumes($storecfg, $vollist, undef, $storage_hints);
+
+        # a writable tape medium must not be in use by another running VM, also not read-only
+        PVE::QemuServer::Tape::check_media_in_use($storecfg, $vmid, $conf);
 
         check_efi_vars($storecfg, $vmid, $conf) if $conf->{bios} && $conf->{bios} eq 'ovmf';
 

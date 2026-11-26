@@ -1488,6 +1488,12 @@ my sub check_install_media_access {
         PVE::Storage::check_volume_access(
             $rpcenv, $authuser, $storecfg, $vmid, $tape->{file}, 'iso',
         );
+        # a writable medium changes the content of the storage, like an upload
+        if ($tape->{rw}) {
+            my ($storeid) = PVE::Storage::parse_volume_id($tape->{file}, 1);
+            $rpcenv->check($authuser, "/storage/$storeid", ['Datastore.AllocateTemplate'])
+                if defined($storeid);
+        }
     }
 
     if ($param->{netboot}) {
@@ -2177,7 +2183,7 @@ __PACKAGE__->register_method({
 
                     PVE::QemuServer::IPL::check_ipl_config($conf, $storecfg) if $conf->{ipl};
                     PVE::QemuServer::assert_s390x_machine_devices($conf);
-                    PVE::QemuServer::Tape::get_tapes($conf); # checks the device numbers
+                    PVE::QemuServer::Tape::check_config($storecfg, $conf);
 
                     if ($conf->{netboot}) {
                         my ($netboot, $cmdline) = fetch_netboot($storecfg, $conf->{netboot});
@@ -3748,8 +3754,9 @@ my $update_vm_api = sub {
                 }
                 $conf->{pending}->{$opt} = $param->{$opt};
             } elsif (PVE::QemuServer::Tape::is_tape_key($opt)) {
-                PVE::QemuServer::Tape::get_tapes(
-                    { $get_config_with_pending->($conf)->%*, $opt => $param->{$opt} });
+                PVE::QemuServer::Tape::check_config(
+                    $storecfg, { $get_config_with_pending->($conf)->%*, $opt => $param->{$opt} },
+                );
                 $conf->{pending}->{$opt} = $param->{$opt};
             } elsif ($opt eq 'machine') {
                 my $machine_conf = PVE::QemuServer::Machine::parse_machine($param->{$opt});
