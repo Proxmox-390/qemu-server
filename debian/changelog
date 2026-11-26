@@ -1,3 +1,14 @@
+qemu-server (9.2.24+s390x2) trixie; urgency=medium
+
+  * s390x: tape drives can take writable media ('rw'), checked against other
+    running VMs; media changes of running VMs apply the read-only mode.
+  * s390x: tape drives get the volume size and end-of-tape properties
+    'capacity', 'max-blocks', 'eot-margin' and 'eot-margin-blocks'.
+  * s390x: api: status/current shows the state of the tape drives.
+  * config: allow digits inside configuration keys ('sclp3270-model').
+
+ -- Yvan Janssens <yvanj@cyber.gent>  Thu, 26 Nov 2026 09:25:12 +0000
+
 qemu-server (9.2.24+s390x1) trixie; urgency=medium
 
   * s390x port, rebased onto 9.2.24:
