@@ -3845,9 +3845,26 @@ my $update_vm_api = sub {
         my $changes = PVE::QemuConfig->cleanup_pending($conf);
         PVE::QemuConfig->write_config($vmid, $conf) if $changes;
 
-        return if !scalar(keys %{ $conf->{pending} });
-
         my $running = PVE::QemuServer::check_running($vmid);
+
+        # Setting the medium of a tape drive of the running VM again loads it again if the guest
+        # unloaded it (Rewind Unload): the way to mount the same tape again.
+        if ($running) {
+            my $errors = {};
+            for my $opt (sort grep { PVE::QemuServer::Tape::is_tape_key($_) } keys %$param) {
+                next if !defined($conf->{$opt}) || defined($conf->{pending}->{$opt});
+                next if $conf->{$opt} ne $param->{$opt};
+                eval {
+                    PVE::QemuServer::Tape::change_medium(
+                        $storecfg, $vmid, $conf, $opt, $conf->{$opt}, $conf->{$opt},
+                    );
+                };
+                $errors->{$opt} = "loading the medium again failed - $@" if $@;
+            }
+            raise_param_exc($errors) if scalar(keys %$errors);
+        }
+
+        return if !scalar(keys %{ $conf->{pending} });
 
         # apply pending changes
 
