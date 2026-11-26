@@ -90,6 +90,7 @@ my $recorded_actions = [];
 #   FAIL_DEVICE_DEL: <id> QEMU accepts 'device_del' for this device, but it never goes away
 #   FAIL_COMMAND: <name> the QMP or HMP command with this name fails
 #   EXPECTED_ERROR: <msg> the expected error message(s)
+#   TAPE_UNLOADED: <key> the guest unloaded the medium of the tape drive (tray open)
 #   STAYS_PENDING: bool
 # all fields are optional, FAIL_* and EXPECTED_ERROR comments can be specified multiple times
 sub parse_test($config_fn) {
@@ -125,6 +126,8 @@ sub parse_test($config_fn) {
             $current_test->{fail_command}->{$1} = 1;
         } elsif ($line =~ /^EXPECTED_ERROR:\s*(.*)$/) {
             push $current_test->{expected_errors}->@*, $1;
+        } elsif ($line =~ /^TAPE_UNLOADED:\s*(\S+)\s*$/) {
+            $current_test->{tape_unloaded}->{$1} = 1;
         } elsif ($line =~ /^STAYS_PENDING:\s*(.*)$/) {
             $current_test->{stays_pending} = $1;
         } else {
@@ -420,6 +423,18 @@ sub mocked_qmp_query($execute, $arguments) {
         for my $id (grep { PVE::QemuServer::Drive::is_valid_drivename($_) } sorted_devices()) {
             my $qdev = $id =~ m/^virtio\d+$/ ? "/machine/peripheral/$id/virtio-backend" : $id;
             push @blocks, { device => '', qdev => $qdev };
+        }
+        # the tape drives of s390x have a named block backend, with the medium loaded unless the
+        # test says the guest unloaded it
+        for my $id (grep { m/^tape\d+$/ } sorted_devices()) {
+            my $unloaded = $current_test->{tape_unloaded}->{$id};
+            push @blocks,
+                {
+                    device => "drive-$id",
+                    qdev => $id,
+                    tray_open => $unloaded ? JSON::true : JSON::false,
+                    inserted => { file => '/medium', ro => JSON::false },
+                };
         }
         return \@blocks;
     } elsif ($execute eq 'query-mice') {

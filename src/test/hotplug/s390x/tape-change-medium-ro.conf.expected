@@ -1,0 +1,3 @@
+qmp eject {"force":true,"id":"tape0"}
+storage activate_volumes ["local:iso/OTHER.AWS"]
+qmp blockdev-change-medium {"filename":"/var/lib/vz/template/iso/OTHER.AWS","format":"raw","id":"tape0","read-only-mode":"read-only"}

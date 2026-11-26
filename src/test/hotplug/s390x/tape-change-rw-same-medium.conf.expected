@@ -1,3 +1,0 @@
-qmp eject {"force":true,"id":"tape0"}
-storage activate_volumes ["local:iso/SCRATCH.aws"]
-qmp blockdev-change-medium {"filename":"/var/lib/vz/template/iso/SCRATCH.aws","format":"raw","id":"tape0","read-only-mode":"read-only"}
