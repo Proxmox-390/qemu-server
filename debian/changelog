@@ -1,3 +1,10 @@
+qemu-server (9.2.24+s390x4) trixie; urgency=medium
+
+  * s390x: api: setting the medium of a tape drive of a running VM again
+    reloads it after the guest unloaded it.
+
+ -- Yvan Janssens <yvanj@cyber.gent>  Thu, 26 Nov 2026 09:45:54 +0000
+
 qemu-server (9.2.24+s390x3) trixie; urgency=medium
 
   * s390x: tape: a change of 'rw' waits for the next start (the drive keeps
