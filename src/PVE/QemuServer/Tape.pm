@@ -3,7 +3,8 @@ package PVE::QemuServer::Tape;
 # Channel-attached tape drives of s390x VMs (the 3590-ccw device of QEMU builds with mainframe
 # support), with an AWSTAPE image as removable medium. Mainframe operating systems are installed
 # from tape: a tape drive can be the IPL device. Media are read-only unless the drive is configured
-# writable ('rw'), and can be changed while the VM runs, like a CD-ROM (in the same mode).
+# writable ('rw'), and can be changed while the VM runs, like a CD-ROM, also between read-only and
+# writable.
 #
 # Tape media live in the ISO images content of a storage, not with the disks of a VM: they are
 # shared media, moved between VMs. A writable medium grows as the guest writes, so it must be a
@@ -411,8 +412,9 @@ my sub drive_unloaded {
 
 Change the medium of the tape drive C<$key> of the running VM C<$vmid> with config C<$conf>: the
 drive unloads the old medium and loads the new one, which raises device attention in the guest.
-The same medium is loaded again if the guest unloaded it (Rewind Unload). Returns 0 if anything
-else changed, that needs a restart.
+A change between read-only and writable loads the medium again in the new mode. The same medium
+is loaded again if the guest unloaded it (Rewind Unload). Returns 0 if anything else changed,
+that needs a restart.
 
 =cut
 
@@ -424,10 +426,11 @@ sub change_medium {
     for my $opt ('devno', $device_properties->@*) {
         return 0 if ($old->{$opt} // '') ne ($new->{$opt} // '');
     }
-    # The drive keeps the write permission it started with: a writable medium in a drive started
-    # read-only would be write-protected, a read-only one cannot go into a drive started writable.
-    return 0 if !$old->{rw} != !$new->{rw};
-    if ($old->{file} eq $new->{file}) {
+    # A change of 'rw' remounts the medium: the drive takes its permissions at each mount (it
+    # cannot switch them while a medium is loaded), like a cartridge that has to come out to flip
+    # its write-protect switch. The guest sees an unload and a load at the load point (attention).
+    return 1 if $old->{file} eq 'none' && $new->{file} eq 'none';
+    if ($old->{file} eq $new->{file} && !$old->{rw} == !$new->{rw}) {
         return 1 if $new->{file} eq 'none' || !drive_unloaded($vmid, $key);
     }
 
