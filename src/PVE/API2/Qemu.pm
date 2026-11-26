@@ -634,8 +634,9 @@ my sub prohibit_tpm_version_change {
 }
 
 # Write the device numbers of the s390x CCW devices in the parameters (3270 terminals, tape
-# drives, qeth adapters) in their canonical form 0.<ssid>.<devno>, as for DASDs. Values that do
-# not parse are left to the later checks.
+# drives, qeth adapters) in their canonical form 0.<ssid>.<devno>, as for DASDs, and tape drives
+# entirely in their canonical form (sizes with the largest exact unit), so that the same setting
+# given another way is no change. Values that do not parse are left to the later checks.
 my sub normalize_ccw_devnos {
     my ($param) = @_;
 
@@ -648,8 +649,8 @@ my sub normalize_ccw_devnos {
             $param->{$key} = PVE::QemuServer::print_terminal($terminal);
         } elsif (PVE::QemuServer::Tape::is_tape_key($key)) {
             my $tape = eval { PVE::QemuServer::Tape::parse_tape($value) } or next;
-            next if !defined($tape->{devno});
-            $tape->{devno} = PVE::QemuServer::CCW::normalize_devno($tape->{devno});
+            $tape->{devno} = PVE::QemuServer::CCW::normalize_devno($tape->{devno})
+                if defined($tape->{devno});
             $param->{$key} = PVE::QemuServer::Tape::print_tape($tape);
         } elsif ($key =~ m/^net\d+$/) {
             my $net = eval { PVE::QemuServer::Network::parse_net($value, 1) } or next;

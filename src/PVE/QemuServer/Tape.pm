@@ -134,9 +134,21 @@ sub is_tape_key {
     return $key =~ m/^tape(\d+)$/ && $1 < $MAX_TAPE_DRIVES;
 }
 
+# The sizes ('disk-size' format) are in bytes in the parsed value, print_tape() writes them with
+# the largest exact unit, so a value parses and prints back to the same canonical form.
+my $size_properties = [grep { ($tape_fmt->{$_}->{format} // '') eq 'disk-size' } sort keys %$tape_fmt];
+
 sub parse_tape {
     my ($value) = @_;
-    return parse_property_string($tape_fmt, $value);
+
+    my $tape = parse_property_string($tape_fmt, $value);
+    for my $opt ($size_properties->@*) {
+        next if !defined($tape->{$opt});
+        my $size = PVE::JSONSchema::parse_size($tape->{$opt});
+        die "$opt: invalid size '$tape->{$opt}'\n" if !defined($size);
+        $tape->{$opt} = $size;
+    }
+    return $tape;
 }
 
 sub print_tape {
@@ -375,12 +387,9 @@ sub get_command_args {
         $drive .= ",read-only=on" if !$tape->{rw};
         push @$args, '-drive', $drive;
         my $device = "3590-ccw,id=$key,devno=" . get_devno($key, $tape) . ",drive=drive-$key";
+        # the sizes are in bytes, see parse_tape()
         for my $opt ($device_properties->@*) {
-            next if !defined(my $value = $tape->{$opt});
-            # sizes in bytes, QEMU does not know all the suffixes of 'disk-size'
-            $value = PVE::JSONSchema::parse_size($value) if $tape_fmt->{$opt}->{format}
-                && $tape_fmt->{$opt}->{format} eq 'disk-size';
-            $device .= ",$opt=$value";
+            $device .= ",$opt=$tape->{$opt}" if defined($tape->{$opt});
         }
         push @$args, '-device', $device;
     }

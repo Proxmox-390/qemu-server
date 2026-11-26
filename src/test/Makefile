@@ -1,6 +1,6 @@
 all: test
 
-test: test_snapshot test_cfg_to_cmd test_cfg_to_cmd_aarch64 test_cfg_to_cmd_s390x test_hotplug test_hotplug_aarch64 test_hotplug_s390x test_pci_addr_conflicts test_pci_reservation test_qemu_img_convert test_migration test_restore_config test_parse_config test_memory test_agent test_raw_config_write test_api test_console test_sclp_log test_qemu_binary test_machine_type test_ipl test_guest_panic test_netboot test_ccw_devno test_dasd test_non_migratable test_ova test_vmstate_storage test_api_cloudinit_dump test_mtunnel test_guest_identity test_network
+test: test_snapshot test_cfg_to_cmd test_cfg_to_cmd_aarch64 test_cfg_to_cmd_s390x test_hotplug test_hotplug_aarch64 test_hotplug_s390x test_pci_addr_conflicts test_pci_reservation test_qemu_img_convert test_migration test_restore_config test_parse_config test_memory test_agent test_raw_config_write test_api test_console test_sclp_log test_qemu_binary test_machine_type test_ipl test_guest_panic test_netboot test_ccw_devno test_tape test_dasd test_non_migratable test_ova test_vmstate_storage test_api_cloudinit_dump test_mtunnel test_guest_identity test_network
 
 test_snapshot: run_snapshot_tests.pl
 	./run_snapshot_tests.pl
@@ -98,6 +98,9 @@ test_guest_panic: run_guest_panic_tests.pl
 
 test_ccw_devno: run_ccw_devno_tests.pl
 	./run_ccw_devno_tests.pl
+
+test_tape: run_tape_tests.pl
+	./run_tape_tests.pl
 
 test_dasd: run_dasd_tests.pl
 	./run_dasd_tests.pl
