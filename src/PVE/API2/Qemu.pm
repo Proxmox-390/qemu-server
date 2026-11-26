@@ -4755,6 +4755,14 @@ __PACKAGE__->register_method({
                 optional => 1,
             },
             uid => PVE::GuestIdentity::meta_format_properties()->{uid},
+            tapes => {
+                description => "The state of the tape drives of a running s390x VM, by tape"
+                    . " drive key: 'loaded' (a medium is loaded, not when the drive is empty or the"
+                    . " guest unloaded it), 'file' (the file of the medium in the drive),"
+                    . " 'read-only', and 'medium' (the configured medium, if that is the file).",
+                type => 'object',
+                optional => 1,
+            },
         },
     },
     code => sub {
@@ -4779,6 +4787,16 @@ __PACKAGE__->register_method({
 
         if (my $identity = PVE::QemuConfig->get_identity($conf)) {
             $status->{uid} = $identity->{uid};
+        }
+
+        if ($status->{status} eq 'running') {
+            my $tapes = eval {
+                PVE::QemuServer::Tape::drive_states(
+                    PVE::Storage::config(), $param->{vmid}, $conf,
+                );
+            };
+            warn "unable to query the tape drives - $@" if $@;
+            $status->{tapes} = $tapes if $tapes;
         }
 
         return $status;

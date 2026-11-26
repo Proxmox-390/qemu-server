@@ -424,6 +424,43 @@ sub change_medium {
     return 1;
 }
 
+=head3 drive_states($storecfg, $vmid, $conf)
+
+The state of the tape drives of the running VM C<$vmid> with config C<$conf>, as hash tape drive
+key => C<{ loaded, file, 'read-only', medium }>: whether a medium is loaded (not when the drive is
+empty or the guest unloaded it, e.g. with Rewind Unload), the file of the medium in the drive, if
+it is read-only, and the configured medium if the file is that one. C<undef> without tape drives.
+
+=cut
+
+sub drive_states {
+    my ($storecfg, $vmid, $conf) = @_;
+
+    my $configured = {};
+    for my $key (valid_tape_keys()) {
+        next if !$conf->{$key};
+        my $tape = eval { parse_tape($conf->{$key}) } or next;
+        $configured->{$key} = $tape->{file};
+    }
+    return undef if !%$configured;
+
+    my $res = {};
+    for my $block (mon_cmd($vmid, 'query-block')->@*) {
+        my ($key) = ($block->{device} // '') =~ m/^drive-(tape\d+)$/ or next;
+        next if !exists($configured->{$key});
+        my $inserted = $block->{inserted};
+        my $state = { loaded => ($inserted && !$block->{tray_open}) ? 1 : 0 };
+        if ($inserted) {
+            $state->{file} = $inserted->{file};
+            $state->{'read-only'} = $inserted->{ro} ? 1 : 0;
+            my $path = eval { tape_path($storecfg, $configured->{$key}) };
+            $state->{medium} = $configured->{$key} if defined($path) && $path eq $inserted->{file};
+        }
+        $res->{$key} = $state;
+    }
+    return $res;
+}
+
 =head3 writable_media($conf)
 
 The keys of the tape drives of C<$conf> with a writable medium loaded.
