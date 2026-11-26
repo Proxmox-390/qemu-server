@@ -91,6 +91,7 @@ use PVE::QemuServer::Drive qw(
 );
 use PVE::QemuServer::DriveDevice qw(print_drivedevice_full scsihw_infos);
 use PVE::QemuServer::IPL;
+use PVE::QemuServer::Iucv;
 use PVE::QemuServer::Machine;
 use PVE::QemuServer::Memory qw(get_current_memory);
 use PVE::QemuServer::MetaInfo;
@@ -439,6 +440,7 @@ EODESC
     netboot => $PVE::QemuServer::Netboot::netboot_desc,
     'netboot-cmdline' => $PVE::QemuServer::Netboot::netboot_cmdline_desc,
     sclpfile => $PVE::QemuServer::SclpFile::sclpfile_desc,
+    iucv => $PVE::QemuServer::Iucv::iucv_desc,
     bootdisk => {
         optional => 1,
         type => 'string',
@@ -1398,7 +1400,12 @@ sub print_netdevice_full {
         $host_mtu_migration, # force this value for host_mtu, 0 means force absence of param
     ) = @_;
 
-    die "netdev $netid: only VirtIO and qeth NICs are supported on s390x\n"
+    if (PVE::QemuServer::Iucv::is_iucv_model($net->{model})) {
+        die "netdev $netid: IUCV network devices are only supported on s390x\n"
+            if $arch ne 's390x';
+        return PVE::QemuServer::Iucv::print_iucv_netdevice($net, $netid);
+    }
+    die "netdev $netid: only VirtIO, qeth and IUCV NICs are supported on s390x\n"
         if $arch eq 's390x' && $net->{model} !~ m/^(?:virtio|qeth)$/;
     die "netdev $netid: qeth NICs are only supported on s390x\n"
         if $arch ne 's390x' && $net->{model} eq 'qeth';
@@ -3882,6 +3889,14 @@ sub config_to_command {
         PVE::QemuServer::Tape::get_command_args($storecfg, $conf, $arch, $kvm_binary)->@*
         if !$is_template;
 
+    # IUCV of s390x VMs: the behaviour of the instruction, the z/VM personality
+    if (!$is_template) {
+        my ($iucv_devices, $iucv_machine) =
+            PVE::QemuServer::Iucv::get_command_args($conf, $arch, $kvm_binary);
+        push $devices->@*, $iucv_devices->@*;
+        push $machineFlags->@*, $iucv_machine->@*;
+    }
+
     # shared folder with SCLP file access of s390x VMs
     push $devices->@*, PVE::QemuServer::SclpFile::get_command_args($conf, $arch, $kvm_binary)->@*
         if !$is_template;
@@ -4294,6 +4309,10 @@ sub config_to_command {
             if $arch eq 's390x'
             && $d->{model} eq 'qeth'
             && !PVE::QemuServer::Helpers::kvm_device_types($kvm_binary)->{'qeth-ccw'};
+
+        die "$netname: the installed QEMU has no IUCV service $d->{model}\n"
+            if PVE::QemuServer::Iucv::is_iucv_model($d->{model})
+            && !PVE::QemuServer::Helpers::kvm_device_types($kvm_binary)->{ $d->{model} };
 
         my $netdevfull = print_netdev_full($vmid, $conf, $arch, $d, $netname);
         push @$devices, '-netdev', $netdevfull;

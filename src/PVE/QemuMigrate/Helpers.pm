@@ -11,6 +11,7 @@ use PVE::Mapping::Dir;
 use PVE::Mapping::PCI;
 use PVE::Mapping::USB;
 
+use PVE::QemuServer::Iucv;
 use PVE::QemuServer::Monitor qw(mon_cmd);
 use PVE::QemuServer::SclpFile;
 use PVE::QemuServer::Virtiofs;
@@ -25,6 +26,8 @@ sub check_non_migratable_resources {
         push @blockers, "virtiofs" if PVE::QemuServer::Virtiofs::virtiofs_enabled($conf);
         # a directory of the node, like virtiofs
         push @blockers, "sclpfile" if $conf->{sclpfile};
+        # IUCV paths of s390x VMs end with the QEMU process
+        push @blockers, "iucv" if PVE::QemuServer::Iucv::has_iucv($conf);
     }
 
     if (scalar(@blockers) && !$noerr) {

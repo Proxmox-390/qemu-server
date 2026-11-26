@@ -35,6 +35,7 @@ SOURCES=Agent.pm	\
 	RNG.pm		\
 	RunState.pm	\
 	SclpFile.pm	\
+	Iucv.pm		\
 	SclpLog.pm	\
 	Snapshot.pm	\
 	StateFile.pm	\

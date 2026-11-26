@@ -1,0 +1,23 @@
+/usr/bin/kvm \
+  -id 8006 \
+  -name vm8006 \
+  -no-shutdown \
+  -chardev 'socket,id=qmp,path=/var/run/qemu-server/8006.qmp,server=on,wait=off' \
+  -object 'monitor-qmp,chardev=qmp,id=monitor-qmp' \
+  -chardev 'socket,id=qmp-event,path=/var/run/qmeventd.sock,reconnect-ms=5000' \
+  -object 'monitor-qmp,chardev=qmp-event,id=monitor-qmp-event' \
+  -pidfile /var/run/qemu-server/8006.pid \
+  -daemonize \
+  -smp '1,sockets=1,cores=1,maxcpus=1' \
+  -nodefaults \
+  -vga none \
+  -nographic \
+  -cpu host \
+  -m 1024 \
+  -chardev 'socket,id=sclp,path=/var/run/qemu-server/8006.sclp,server=on,wait=off' \
+  -device 'sclpconsole,chardev=sclp' \
+  -device 'virtio-balloon-ccw,id=balloon0,devno=fe.0.0003,free-page-reporting=on' \
+  -iscsi 'initiator-name=iqn.1993-08.org.debian:01:aabbccddeeff' \
+  -netdev 'type=user,id=net0,hostname=vm8006' \
+  -device 'iucv-net,id=net0,name=TCPIP,ip=10.0.2.15/24,netdev=net0,mac=BC:24:11:00:00:01,gateway=10.0.2.2,mtu=1400' \
+  -machine 'zvm-personality=on,type=s390-ccw-virtio+pve0'

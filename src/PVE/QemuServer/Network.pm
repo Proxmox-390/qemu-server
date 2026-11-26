@@ -12,6 +12,7 @@ use PVE::RESTEnvironment qw(log_warn);
 use PVE::Tools qw($IPV6RE file_read_firstline);
 
 use PVE::QemuServer::CCW;
+use PVE::QemuServer::Iucv;
 use PVE::QemuServer::Monitor qw(mon_cmd);
 
 my $nic_model_list = [
@@ -23,6 +24,8 @@ my $nic_model_list = [
     'i82551',
     'i82557b',
     'i82559er',
+    'iucv-net',
+    'iucv-tcpip',
     'ne2k_isa',
     'ne2k_pci',
     'pcnet',
@@ -115,7 +118,9 @@ my $net_fmt = {
         minimum => 1,
         maximum => 65520,
         description =>
-            "Force MTU of network device (VirtIO only). Setting to '1' or empty will use the bridge MTU",
+            "Force MTU of network device (VirtIO and IUCV kinds only). Setting to '1' or empty"
+                . " will use the bridge MTU. IUCV kinds: the MTU of the Ethernet side, 576 up to"
+                . " the bridge MTU, '1' for the bridge MTU; 1500 if not set.",
         optional => 1,
     },
     devno => {
@@ -129,6 +134,7 @@ my $net_fmt = {
             . " this one.",
         optional => 1,
     },
+    $PVE::QemuServer::Iucv::net_fmt_iucv->%*,
     'host-tunnel' => {
         type => 'boolean',
         description => 'Enable host GSO over UDP tunnel offload. (VirtIO only).',
@@ -235,10 +241,10 @@ sub parse_net {
 }
 
 # Whether a network device can be hot-plugged. The qeth-ccw device of QEMU builds with mainframe
-# support (s390x) cannot.
+# support (s390x) cannot, nor can the IUCV services.
 sub is_hotpluggable {
     my ($net) = @_;
-    return $net->{model} ne 'qeth';
+    return $net->{model} ne 'qeth' && !PVE::QemuServer::Iucv::is_iucv_model($net->{model});
 }
 
 # ipconfigX ip=cidr,gw=ip,ip6=cidr,gw6=ip

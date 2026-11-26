@@ -47,6 +47,7 @@ use PVE::QemuServer::Drive qw(
 );
 use PVE::QemuServer::Helpers;
 use PVE::QemuServer::ImportDisk;
+use PVE::QemuServer::Iucv;
 use PVE::QemuServer::Monitor qw(mon_cmd vm_qmp_peer);
 use PVE::QemuServer::Machine;
 use PVE::QemuServer::Memory qw(get_current_memory);
@@ -1268,6 +1269,7 @@ my $memoryoptions = {
 my $hwtypeoptions = {
     'acpi' => 1,
     'hotplug' => 1,
+    'iucv' => 1,
     'kvm' => 1,
     'machine' => 1,
     'runningmachine' => 1,
@@ -1970,6 +1972,10 @@ __PACKAGE__->register_method({
 
             PVE::QemuServer::Network::add_random_macs($param);
             normalize_ccw_devnos($param);
+
+            # the IUCV network devices and the option iucv of s390x VMs
+            my $iucv_errors = PVE::QemuServer::Iucv::check_config($param, $arch);
+            raise_param_exc($iucv_errors) if scalar(keys $iucv_errors->%*);
 
             # the given device numbers, the missing ones are assigned from the free ones
             PVE::QemuServer::CCW::assert_devno_config({}, 0, $param) if $arch eq 's390x';
@@ -3416,6 +3422,15 @@ my $update_vm_api = sub {
         my $arch = PVE::QemuServer::Helpers::get_vm_arch($conf);
         PVE::QemuServer::assert_s390x_option_supported($arch, $_, $param->{$_})
             for sort keys %$param;
+
+        # the IUCV network devices and the option iucv, as they are with the changes
+        if (grep { m/^(?:net\d+|iucv)$/ } keys(%$param), @delete) {
+            my $current = $get_config_with_pending->($conf);
+            my $new_conf = { $current->%*, $param->%* };
+            delete $new_conf->@{@delete};
+            my $iucv_errors = PVE::QemuServer::Iucv::check_config($new_conf, $arch);
+            raise_param_exc($iucv_errors) if scalar(keys $iucv_errors->%*);
+        }
 
         # the CCW device numbers of the config with the changes must not overlap. Also refuses an
         # unrelated change of a config that has overlapping device numbers already.

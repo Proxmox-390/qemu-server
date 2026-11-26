@@ -1,0 +1,25 @@
+/usr/bin/kvm \
+  -id 8006 \
+  -name vm8006 \
+  -no-shutdown \
+  -chardev 'socket,id=qmp,path=/var/run/qemu-server/8006.qmp,server=on,wait=off' \
+  -object 'monitor-qmp,chardev=qmp,id=monitor-qmp' \
+  -chardev 'socket,id=qmp-event,path=/var/run/qmeventd.sock,reconnect-ms=5000' \
+  -object 'monitor-qmp,chardev=qmp-event,id=monitor-qmp-event' \
+  -pidfile /var/run/qemu-server/8006.pid \
+  -daemonize \
+  -smp '1,sockets=1,cores=1,maxcpus=1' \
+  -nodefaults \
+  -vga none \
+  -nographic \
+  -cpu host \
+  -m 1024 \
+  -chardev 'socket,id=sclplm,path=/var/run/qemu-server/8006.sclplm,server=on,wait=off' \
+  -chardev 'file,id=sclplm-hardcopy,path=/var/log/qemu-server/8006-sclplm.log,append=on' \
+  -device 'sclplmconsole,chardev=sclplm,hardcopy=sclplm-hardcopy' \
+  -chardev 'socket,id=sclp3270,path=/var/run/qemu-server/8006.3270,server=on,wait=off,tn3270=on' \
+  -device 'sclp3270console,chardev=sclp3270' \
+  -iscsi 'initiator-name=iqn.1993-08.org.debian:01:aabbccddeeff' \
+  -netdev 'type=tap,id=net0,ifname=tap8006i0,script=/usr/libexec/qemu-server/pve-bridge,downscript=/usr/libexec/qemu-server/pve-bridgedown' \
+  -device 'iucv-tcpip,id=net0,name=TCPIP2,netdev=net0,mac=BC:24:11:00:00:02,ip=192.0.2.20/24,gateway=192.0.2.1,dns=192.0.2.53,hostname=guest,domain=example.com,mtu=1500' \
+  -machine 'type=s390-ccw-virtio+pve0'
