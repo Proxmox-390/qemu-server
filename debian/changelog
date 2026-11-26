@@ -1,3 +1,15 @@
+qemu-server (9.2.24+s390x7) trixie; urgency=medium
+
+  * s390x: a shutdown of a guest that is not Linux ends when the guest
+    loads a disabled wait PSW, as mainframe operating systems do instead of
+    powering off: QEMU is quit and the shutdown succeeds, with the PSW and
+    the wait state code in the task log.
+  * s390x: new VM option 's390-shutdown-wait': the wait codes that end a
+    shutdown (default: any), and whether a shutdown from inside the guest
+    stops the VM too ('guest', via qmeventd and 'qm disabled-wait').
+
+ -- Yvan Janssens <yvanj@cyber.gent>  Thu, 26 Nov 2026 14:43:21 +0100
+
 qemu-server (9.2.24+s390x6) trixie; urgency=medium
 
   * s390x: tape: a change between read-only and writable applies to the
