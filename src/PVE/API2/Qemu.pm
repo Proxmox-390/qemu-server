@@ -3040,7 +3040,9 @@ __PACKAGE__->register_method({
             },
             ranges => {
                 description => "The default device number range of each device kind,"
-                    . " in subchannel set 0. 'reserved' ranges cannot be used.",
+                    . " in subchannel set 0. qemu-server assigns the device numbers of a"
+                    . " 'reserved' range itself and never suggests one of them, a configured"
+                    . " device number may be in it unless a VirtIO device of the VM uses it.",
                 type => 'array',
                 items => {
                     type => 'object',

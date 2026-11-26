@@ -745,8 +745,16 @@ subtest 's390x: overlapping CCW device numbers are refused on every change' => s
             undef,
         ],
         [
-            { fba2 => 'local:100/vm-100-Y.raw,devno=0.0.0042' },
-            fba2 => qr/^fba2: device number 0\.0\.0042 is reserved for the virtio devices/,
+            { fba2 => 'local:100/vm-100-Y.raw,devno=0.0.0042' }, # no virtio device there
+            undef,
+        ],
+        [
+            { terminal1 => '00a0' }, # where mainframe I/O configurations have local 3270s
+            undef,
+        ],
+        [
+            { agent => '1', fba2 => 'local:100/vm-100-Y.raw,devno=0.0.0008' },
+            fba2 => qr/^fba2: device number 0\.0\.0008 is used by the VirtIO device of 'agent' \(qga0\)/,
         ],
         [
             { terminal0 => '0.0.0300' },
@@ -778,6 +786,17 @@ subtest 's390x: overlapping CCW device numbers are refused on every change' => s
             }
         }
     }
+
+    # a virtio device added at the device number of a configured device: refused at its key
+    $stored = dclone($base);
+    $stored->{terminal1} = '0.0.0008';
+    my $agent_err = api_error('update_vm', { agent => '1' });
+    is_deeply([keys %$agent_err], ['agent'], 'enabling the agent at a terminal: error on agent');
+    like(
+        $agent_err->{agent},
+        qr/^terminal1: device number 0\.0\.0008 is used by the VirtIO device of 'agent' \(qga0\)/,
+        'enabling the agent at a terminal: clear error',
+    );
 
     # a config that has an overlap already (made by hand, or before overlaps were refused)
     $stored = dclone($base);

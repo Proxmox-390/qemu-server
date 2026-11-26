@@ -99,7 +99,9 @@ my $conflict_tests = [
         { ckd0 => 'x:1,devno=0300', fba0 => 'x:2,devno=0.0.0300' },
         qr/^fba0: device number 0\.0\.0300 is already used by ckd0/,
     ],
-    [{ fba0 => 'x:2,devno=0.0.0042' }, qr/^fba0: device number 0\.0\.0042 is reserved/],
+    # the virtio range is free unless a virtio device of the VM uses the device number, see below
+    [{ fba0 => 'x:2,devno=0.0.0042' }, undef],
+    [{ terminal0 => '00a0' }, undef],
     [{ fba0 => 'x:2,devno=0.1.0042' }, undef],
     [{ fba0 => 'x:2,devno=0.0.0300', fba1 => 'x:2,devno=0.1.0300' }, undef],
     [{ fba0 => 'x:2,devno=fe.0.0300' }, qr/^fba0: invalid device number/],
@@ -239,6 +241,77 @@ like(
     );
     eval { PVE::QemuServer::CCW::check_devno_conflicts($new) };
     is($@, '', 'new VM: no conflicts');
+}
+
+# configured device numbers in the virtio range: refused only at those of the VM's virtio devices
+{
+    PVE::QemuServer::CCW::register_virtio_devices(sub {
+        my ($values) = @_;
+        my $res = {};
+        $res->{0x08} = "the VirtIO device of 'agent' (qga0)" if $values->{agent};
+        $res->{0x0a} = "the VirtIO device of 'virtio0' (virtio0)" if $values->{virtio0};
+        return $res;
+    });
+
+    my $virtio_conf = { agent => '1', virtio0 => 'x:1', terminal0 => '00a0' };
+    eval { PVE::QemuServer::CCW::check_devno_conflicts($virtio_conf) };
+    is($@, '', 'terminal at 0.0.00a0 next to virtio devices');
+
+    eval { PVE::QemuServer::CCW::check_devno_conflicts({ $virtio_conf->%*, terminal1 => '0008' }) };
+    like(
+        $@,
+        qr/^terminal1: device number 0\.0\.0008 is used by the VirtIO device of 'agent' \(qga0\)/,
+        'terminal at the device number of the guest agent',
+    );
+
+    eval {
+        PVE::QemuServer::CCW::check_devno_conflicts(
+            { net0 => 'qeth=BC:24:11:00:00:01,devno=0008' });
+    };
+    is($@, '', 'qeth triplet in the virtio range of a VM without virtio devices');
+
+    eval {
+        PVE::QemuServer::CCW::check_devno_conflicts(
+            { virtio0 => 'x:1', net0 => 'qeth=BC:24:11:00:00:01,devno=0008' });
+    };
+    like(
+        $@,
+        qr/^net0: device number 0\.0\.000a is used by the VirtIO device of 'virtio0'/,
+        'the third device number of a qeth triplet at a virtio device',
+    );
+
+    eval {
+        PVE::QemuServer::CCW::check_devno_conflicts({ agent => '1', fba0 => 'x:1,devno=0.1.0008' });
+    };
+    is($@, '', 'virtio devices are in subchannel set 0 only');
+
+    # the API reports the problem at the changed key
+    eval {
+        PVE::QemuServer::CCW::assert_devno_config(
+            { terminal0 => '0008' }, 0, { agent => '1' }, ['agent'],
+        );
+    };
+    my $error_keys = sub {
+        my ($err) = @_;
+        return [sort keys(($err && ref($err) ? $err->{errors} : {})->%*)];
+    };
+    is_deeply($error_keys->($@), ['agent'], 'enabling the agent is refused at agent');
+    eval {
+        PVE::QemuServer::CCW::assert_devno_config(
+            { agent => '1' }, 0, { terminal0 => '0008' }, ['terminal0'],
+        );
+    };
+    is_deeply($error_keys->($@), ['terminal0'], 'a terminal at the agent is refused at terminal0');
+
+    # the suggestions stay out of the virtio range
+    is(
+        PVE::QemuServer::CCW::next_free_devno($virtio_conf, '3270'),
+        '0.0.0700',
+        '3270 default unchanged',
+    );
+    my $full = [map { sprintf('0.0.%04x', $_) } 0x0100 .. 0xffff];
+    eval { PVE::QemuServer::CCW::next_free_devno(undef, 'ckd', $full) };
+    like($@, qr/no free device number/, 'the virtio range is never suggested');
 }
 
 done_testing();

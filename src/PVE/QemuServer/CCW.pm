@@ -12,10 +12,10 @@ package PVE::QemuServer::CCW;
 # Default ranges per device kind, in subchannel set 0. They are the ranges QEMU-mod uses for its
 # automatic device numbers, which follow the conventions of mainframe installations
 # (OSA at 0400, tape at 0580, 3270 terminals at 0700). A user can choose any free device
-# number outside the reserved range, the defaults only serve the "next free" suggestion.
+# number, the defaults only serve the "next free" suggestion.
 #
 #   kind     range          devnos per device   QEMU device
-#   virtio   0000 - 00ff    1                   virtio-*-ccw (reserved, assigned by qemu-server)
+#   virtio   0000 - 00ff    1                   virtio-*-ccw (assigned by qemu-server)
 #   fba      0200 - 02ff    1                   fba-ccw (FBA DASD, 9336)
 #   ckd      0300 - 03ff    1                   eckd-ccw (CKD DASD, 3390)
 #   qeth     0400 - 04ff    3, base aligned to 4  qeth-ccw (OSA read/write/data triplet)
@@ -23,8 +23,11 @@ package PVE::QemuServer::CCW;
 #   3270     0700 - 07ff    1                   x-terminal3270 (3270 terminal)
 #
 # qemu-server derives the device numbers of its virtio CCW devices from the fixed PCI slot map
-# (see PVE::QemuServer::PCI::print_pci_addr()), they are below 0x0100. The whole range
-# 0.0.0000-0.0.00ff is reserved for them, so no configured device number can collide with one.
+# (see PVE::QemuServer::PCI::print_pci_addr()), they are below 0x0100. The "next free"
+# suggestion never picks a device number in 0.0.0000-0.0.00ff. A configured device number may be
+# in that range (the I/O configurations of mainframe operating systems often have terminals or
+# other devices there), as long as it is not the device number of a virtio device of the same VM
+# (see register_virtio_devices()).
 
 use strict;
 use warnings;
@@ -94,6 +97,22 @@ empty list if this entry has no device number.
 sub register_devno_user {
     my ($key_re, $code) = @_;
     push $devno_users->@*, [$key_re, $code];
+}
+
+my $virtio_devices;
+
+=head3 register_virtio_devices($code)
+
+Register the function that tells which virtio CCW devices a VM configuration gets. C<$code> is
+called with the configuration values (key => value, pending changes and overrides applied, see
+get_devno_users()) and returns a hash: device number (integer, subchannel set 0) => description
+of the device, e.g. C<"the VirtIO device of 'agent' (qga0)">.
+
+=cut
+
+sub register_virtio_devices {
+    my ($code) = @_;
+    $virtio_devices = $code;
 }
 
 sub devno_kinds {
@@ -184,7 +203,8 @@ C<devno> is undef if not configured.
 
 =cut
 
-sub get_devno_users {
+# The configuration values key => value, see get_devno_users().
+my sub config_values {
     my ($conf, $current_only, $override) = @_;
 
     my $values = {};
@@ -210,6 +230,14 @@ sub get_devno_users {
             delete $values->{$key};
         }
     }
+
+    return $values;
+}
+
+sub get_devno_users {
+    my ($conf, $current_only, $override) = @_;
+
+    my $values = config_values($conf, $current_only, $override);
 
     my $res = [];
     for my $key (sort keys %$values) {
@@ -259,12 +287,13 @@ my sub reserved_by {
 
 The first problem with the configured device numbers of the VM configuration (including the
 pending changes, unless C<$current_only> is set, and C<$override>, see get_devno_users()): a device
-number that is invalid, in a reserved range, leaves no room for all device numbers of the device,
-or overlaps with another device. All CCW devices count: DASDs (also the cloud-init FBA DASD), tape
-drives, the read/write/data triplets of qeth adapters and 3270 terminals; the VirtIO CCW devices
-have the reserved range. C<$changed> is a list of keys being changed: they are checked after the
-others, so an overlap is reported on the changed device. Returns undef or
-C<{ key, other, message }> (C<other> is the key of the other device of an overlap).
+number that is invalid, leaves no room for all device numbers of the device, overlaps with
+another device or is the device number of a virtio device of the VM (see
+register_virtio_devices()). All CCW devices count: DASDs (also the cloud-init FBA DASD), tape
+drives, the read/write/data triplets of qeth adapters and 3270 terminals. C<$changed> is a list
+of keys being changed: they are checked after the others, so an overlap is reported on the
+changed device. Returns undef or C<{ key, other, message }> (C<other> is the key of the other
+device of an overlap; for a virtio device, the key that adds it, if any).
 
 =cut
 
@@ -277,7 +306,9 @@ my sub devno_range_text {
 sub find_devno_conflict {
     my ($conf, $current_only, $override, $changed) = @_;
 
-    my $users = get_devno_users($conf, $current_only, $override);
+    my $values = config_values($conf, $current_only, $override);
+    my $users = get_devno_users($values, 1);
+    my $virtio = $virtio_devices ? $virtio_devices->($values) : {};
     my $is_changed = { map { $_ => 1 } ($changed // [])->@* };
     $users = [
         (grep { !$is_changed->{ $_->{key} } } @$users),
@@ -310,8 +341,13 @@ sub find_devno_conflict {
         $ranges->{$key} = devno_range_text($ssid, $devno, $count);
         for my $i (0 .. $count - 1) {
             my $printed = print_devno($ssid, $devno + $i);
-            if (my $reserved = reserved_by($ssid, $devno + $i)) {
-                return $conflict->("device number $printed is reserved for the $reserved devices");
+            if ($ssid == 0 && (my $device = $virtio->{ $devno + $i })) {
+                my ($other) = $device =~ m/'([^']+)'/;
+                return $conflict->(
+                    "device number $printed is used by $device, qemu-server assigns"
+                        . " the device numbers of the VirtIO devices in 0.0.0000-0.0.00ff",
+                    $other,
+                );
             }
             if (my $other = $used->{ "$ssid." . ($devno + $i) }) {
                 my $message = "device number $printed is already used by $other";
@@ -356,12 +392,14 @@ sub assert_devno_config {
     my $conflict = find_devno_conflict($conf, $current_only, $override, $changed) or return;
     my ($key, $other, $message) = $conflict->@{qw(key other message)};
     my $is_changed = { map { $_ => 1 } ($changed // [])->@* };
+    # shown at the changed one of the two (a virtio device is not checked as a changed device)
+    my $param_key = $other && $is_changed->{$other} && !$is_changed->{$key} ? $other : $key;
     if (scalar(keys %$is_changed) && !$is_changed->{$key} && !($other && $is_changed->{$other})) {
         chomp($message);
         $message = "the configuration has conflicting device numbers, change the device number of"
             . " '$key'" . ($other ? " or '$other'" : '') . " (or remove it) first - $message\n";
     }
-    PVE::Exception::raise_param_exc({ $key => $message });
+    PVE::Exception::raise_param_exc({ $param_key => $message });
 }
 
 =head3 next_free_devno($conf, $kind, [$extra_used], [$skip_key], [$override])

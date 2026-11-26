@@ -3429,6 +3429,69 @@ sub balloon_enabled {
     return 1;
 }
 
+# The virtio CCW devices an s390x VM config gets (see config_to_command()), for the check that no
+# configured CCW device number is one of theirs: device number => the device and the config key
+# that adds it. Errs on the side of a device too many (a SCSI controller even if the disk is not
+# created, the serial bus for a serial port the start refuses).
+PVE::QemuServer::CCW::register_virtio_devices(sub {
+    my ($conf) = @_;
+
+    my $ids = {};
+    my $scsihw = $conf->{scsihw} // 'virtio-scsi-pci'; # see with_default_scsihw()
+    for my $key (sort keys %$conf) {
+        my $value = $conf->{$key};
+        if ($key =~ m/^virtio\d+$/) {
+            $ids->{$key} = $key;
+        } elsif ($key =~ m/^net\d+$/) {
+            $ids->{$key} = $key if $value !~ m/(?:^|,)(?:model=)?qeth(?:[=,]|$)/;
+        } elsif ($key =~ m/^scsi(\d+)$/) {
+            my (undef, $controller, $prefix) = scsihw_infos($scsihw, $1);
+            $ids->{"$prefix$controller"} //= $key;
+        } elsif ($key =~ m/^serial\d+$/) {
+            $ids->{virtioserial0} //= $key;
+        } elsif ($key eq 'rng0') {
+            $ids->{rng0} = $key;
+        } elsif ($key eq 'vga') {
+            $ids->{vga} = $key if (parse_vga($value)->{type} // '') =~ m/^virtio/;
+        }
+    }
+    my $agent = parse_guest_agent($conf->{agent});
+    $ids->{qga0} = 'agent' if $agent->{enabled} && ($agent->{type} // 'virtio') eq 'virtio';
+    $ids->{balloon0} = 'balloon' if balloon_enabled($conf);
+
+    my $res = {};
+    for my $id (sort keys %$ids) {
+        my $devno = PVE::QemuServer::PCI::ccw_devno_of_id($id) // next;
+        $res->{$devno} = "the VirtIO device of '$ids->{$id}' ($id)";
+    }
+    return $res;
+});
+
+# The CCW devices of the QEMU command line must not share a device number (a qeth adapter uses
+# three from its 'devno'): the configured ones are checked against the virtio ones before (see
+# above), this catches what that check does not know about, with the QEMU device ids.
+sub assert_unique_ccw_devnos {
+    my ($devices) = @_;
+
+    my $used = {};
+    for (my $i = 0; $i < $devices->$#*; $i++) {
+        next if $devices->[$i] ne '-device';
+        my $device = $devices->[$i + 1];
+        my ($ssid, $devno) = $device =~ m/(?:^|,)devno=fe\.([0-3])\.([0-9a-f]{1,4})(?:,|$)/i
+            or next;
+        my ($id) = $device =~ m/(?:^|,)id=([^,]+)/;
+        $id //= ($device =~ m/^([^,]+)/)[0];
+        my $count = $device =~ m/^qeth-ccw(?:,|$)/ ? 3 : 1;
+        for my $n (hex($devno) .. hex($devno) + $count - 1) {
+            my $printed = PVE::QemuServer::CCW::print_devno($ssid, $n);
+            die "device number $printed is used by both '$used->{$printed}' and '$id'\n"
+                if $used->{$printed};
+            $used->{$printed} = $id;
+        }
+    }
+    return;
+}
+
 sub assert_s390x_option_supported {
     my ($arch, $opt, $value) = @_;
 
@@ -4324,6 +4387,8 @@ sub config_to_command {
     push @$machineFlags, 'mem-merge=off' if defined($conf->{'allow-ksm'}) && !$conf->{'allow-ksm'};
 
     PVE::QemuServer::Virtiofs::config($conf, $vmid, $devices);
+
+    assert_unique_ccw_devnos($devices) if $arch eq 's390x';
 
     push @$cmd, @$devices;
     push @$cmd, '-rtc', join(',', @$rtcFlags) if scalar(@$rtcFlags);

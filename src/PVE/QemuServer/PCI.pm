@@ -306,6 +306,15 @@ sub get_pci_bridge_for_device {
     return;
 }
 
+# The CCW device number (subchannel set 0, an integer below 0x0100) qemu-server gives the virtio
+# device $id of an s390x VM, derived from its PCI slot, undef if $id has no slot.
+sub ccw_devno_of_id {
+    my ($id) = @_;
+
+    my $d = $get_addr_mapping_from_id->(get_pci_addr_map(), $id) or return;
+    return $d->{bus} * 32 + hex($d->{addr});
+}
+
 sub print_pci_addr {
     my ($id, $arch) = @_;
 
@@ -317,7 +326,7 @@ sub print_pci_addr {
     if (my $d = $get_addr_mapping_from_id->($map, $id)) {
         # On s390x, the virtio devices are CCW devices. Derive their device number from the PCI
         # slot, so it is just as stable.
-        return sprintf(",devno=fe.0.%04x", $d->{bus} * 32 + hex($d->{addr})) if $arch eq 's390x';
+        return sprintf(",devno=fe.0.%04x", ccw_devno_of_id($id)) if $arch eq 's390x';
 
         # Using same bus slots on all HW, so we need to check special cases here. For aarch64, the
         # virt machine has an initial pcie.0. The other pci bridges that get added are called pci.N.

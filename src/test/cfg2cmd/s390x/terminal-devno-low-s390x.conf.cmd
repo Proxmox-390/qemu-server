@@ -1,0 +1,39 @@
+/usr/bin/kvm \
+  -id 8006 \
+  -name vm8006 \
+  -no-shutdown \
+  -chardev 'socket,id=qmp,path=/var/run/qemu-server/8006.qmp,server=on,wait=off' \
+  -object 'monitor-qmp,chardev=qmp,id=monitor-qmp' \
+  -chardev 'socket,id=qmp-event,path=/var/run/qmeventd.sock,reconnect-ms=5000' \
+  -object 'monitor-qmp,chardev=qmp-event,id=monitor-qmp-event' \
+  -pidfile /var/run/qemu-server/8006.pid \
+  -daemonize \
+  -smp '1,sockets=1,cores=1,maxcpus=1' \
+  -nodefaults \
+  -vga none \
+  -nographic \
+  -cpu host \
+  -m 1024 \
+  -object '{"id":"throttle-drive-fba0","limits":{},"qom-type":"throttle-group"}' \
+  -chardev 'socket,id=sclplm,path=/var/run/qemu-server/8006.sclplm,server=on,wait=off' \
+  -chardev 'file,id=sclplm-hardcopy,path=/var/log/qemu-server/8006-sclplm.log,append=on' \
+  -device 'sclplmconsole,chardev=sclplm,hardcopy=sclplm-hardcopy' \
+  -chardev 'socket,id=sclp3270,path=/var/run/qemu-server/8006.3270,server=on,wait=off,tn3270=on' \
+  -device 'sclp3270console,chardev=sclp3270' \
+  -chardev 'socket,id=terminal0,path=/var/run/qemu-server/8006.terminal0,server=on,wait=off,tn3270=on' \
+  -device 'x-terminal3270,chardev=terminal0,devno=fe.0.00a0,id=terminal0' \
+  -chardev 'socket,id=terminal1,path=/var/run/qemu-server/8006.terminal1,server=on,wait=off,tn3270=on' \
+  -device 'x-terminal3270,chardev=terminal1,devno=fe.0.0000,id=terminal1' \
+  -chardev 'socket,id=terminal2,path=/var/run/qemu-server/8006.terminal2,server=on,wait=off,tn3270=on' \
+  -device 'x-terminal3270,chardev=terminal2,devno=fe.0.000a,id=terminal2' \
+  -chardev 'socket,id=terminal3,path=/var/run/qemu-server/8006.terminal3,server=on,wait=off,tn3270=on' \
+  -device 'x-terminal3270,chardev=terminal3,devno=fe.0.003f,id=terminal3' \
+  -chardev 'socket,path=/var/run/qemu-server/8006.qga,server=on,wait=off,id=qga0' \
+  -device 'virtio-serial,id=qga0,devno=fe.0.0008' \
+  -device 'virtserialport,chardev=qga0,name=org.qemu.guest_agent.0' \
+  -iscsi 'initiator-name=iqn.1993-08.org.debian:01:aabbccddeeff' \
+  -blockdev '{"detect-zeroes":"on","discard":"ignore","driver":"throttle","file":{"cache":{"direct":true,"no-flush":false},"detect-zeroes":"on","discard":"ignore","driver":"raw","file":{"aio":"io_uring","cache":{"direct":true,"no-flush":false},"detect-zeroes":"on","discard":"ignore","driver":"file","filename":"/var/lib/vz/images/8006/vm-8006-disk-0.raw","node-name":"ecfa4d0a289f39910066cbfc0f38243","read-only":false},"node-name":"fcfa4d0a289f39910066cbfc0f38243","read-only":false},"node-name":"drive-fba0","read-only":false,"throttle-group":"throttle-drive-fba0"}' \
+  -device 'fba-ccw,drive=drive-fba0,id=fba0,devno=fe.0.00b0' \
+  -netdev 'type=tap,id=net0,ifname=tap8006i0,script=/usr/libexec/qemu-server/pve-bridge,downscript=/usr/libexec/qemu-server/pve-bridgedown,vhost=on' \
+  -device 'virtio-net-ccw,mac=BC:24:11:00:00:00,netdev=net0,devno=fe.0.0012,id=net0,rx_queue_size=1024,tx_queue_size=256,bootindex=300,host_mtu=1500,host_tunnel=off' \
+  -machine 'type=s390-ccw-virtio+pve0'
