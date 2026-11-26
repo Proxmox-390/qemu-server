@@ -16,6 +16,10 @@
     before the socket got closed. The second parameter `guest` is also boolean
     `1` or `0` depending if the shutdown was requested from the guest OS
     (i.e., the "inside").
+
+    On s390x, a 'GUEST_PANICKED' event for a disabled wait of the guest (which
+    is how mainframe operating systems end their shutdown) executes
+    `qm disabled-wait VMID`, which stops the VM if its configuration says so.
 */
 
 #ifndef _GNU_SOURCE
@@ -189,6 +193,42 @@ void handle_qmp_handshake(struct Client *client) {
     send_qmp_cmd(client, qmp_answer, sizeof(qmp_answer));
 }
 
+// s390x: the guest stopped its last CPU with a disabled wait PSW, which mainframe operating systems
+// do when they shut down. 'qm disabled-wait' decides from the VM config whether that means the VM
+// is off.
+static bool is_s390_disabled_wait(struct json_object *obj) {
+    struct json_object *data, *info, *type, *reason;
+    if (!json_object_object_get_ex(obj, "data", &data) ||
+        !json_object_object_get_ex(data, "info", &info) ||
+        !json_object_object_get_ex(info, "type", &type) ||
+        !json_object_object_get_ex(info, "reason", &reason)) {
+        return false;
+    }
+    const char *type_str = json_object_get_string(type);
+    const char *reason_str = json_object_get_string(reason);
+    return type_str && reason_str && !strcmp(type_str, "s390") &&
+           !strcmp(reason_str, "disabled-wait");
+}
+
+static void run_disabled_wait(struct Client *client) {
+    VERBOSE_PRINT("%s: executing disabled-wait\n", client->qemu.vmid);
+
+    int pid = fork();
+    if (pid < 0) {
+        fprintf(stderr, "fork failed: %s\n", strerror(errno));
+        return;
+    }
+    if (pid == 0) {
+        char *script = "/usr/sbin/qm";
+
+        char *args[] = {script, "disabled-wait", client->qemu.vmid, NULL};
+
+        execvp(script, args);
+        perror("execvp");
+        _exit(1);
+    }
+}
+
 void handle_qmp_event(struct Client *client, struct json_object *obj) {
     struct json_object *event;
     if (!json_object_object_get_ex(obj, "event", &event)) {
@@ -214,6 +254,9 @@ void handle_qmp_event(struct Client *client, struct json_object *obj) {
 
         // check if a backup is running and kill QEMU process if not
         terminate_check(client);
+    } else if (!strcmp(json_object_get_string(event), "GUEST_PANICKED") &&
+               is_s390_disabled_wait(obj)) {
+        run_disabled_wait(client);
     }
 }
 

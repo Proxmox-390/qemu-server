@@ -76,6 +76,7 @@ use PVE::QemuServer::CPUConfig qw(
 );
 use PVE::QemuServer::CPUFlags;
 use PVE::QemuServer::DASD;
+use PVE::QemuServer::DisabledWait;
 use PVE::QemuServer::Drive qw(
     is_valid_drivename
     checked_volume_format
@@ -432,6 +433,7 @@ EODESC
             . " from installation media. Not used together with 'netboot'.",
     },
     'sclplm-syslog' => $PVE::QemuServer::SclpLog::syslog_desc,
+    's390-shutdown-wait' => $PVE::QemuServer::DisabledWait::shutdown_wait_desc,
     'sclplm-codepage' => $PVE::QemuServer::SclpLog::codepage_desc,
     'sclp3270-model' => $PVE::QemuServer::Console3270::sclp3270_model_desc,
     netboot => $PVE::QemuServer::Netboot::netboot_desc,
@@ -3023,6 +3025,28 @@ sub guest_panic_status_fields {
     return $res;
 }
 
+# The crash information (see get_guest_panic_info()) of an s390x VM whose OS type is not Linux,
+# if it is in the 'guest-panicked' run state because its guest loaded a disabled wait PSW;
+# otherwise undef.
+sub get_s390_disabled_wait {
+    my ($vmid, $conf) = @_;
+
+    return undef if !PVE::QemuServer::DisabledWait::applies($conf);
+    my $status = mon_cmd($vmid, 'query-status');
+    return undef if ($status->{status} // '') ne 'guest-panicked';
+    my $info = get_guest_panic_info($vmid);
+    my $fields = guest_panic_status_fields($info, $conf->{ostype});
+    return defined($fields->{'disabled-wait'}) ? $info : undef;
+}
+
+# The log line for the disabled wait with the crash information $info.
+sub s390_disabled_wait_message {
+    my ($info) = @_;
+    my $code = PVE::QemuServer::DisabledWait::wait_code($info->{'psw-addr'});
+    return "guest is in a disabled wait, wait state code X'$code'"
+        . " (PSW $info->{'psw-mask'} $info->{'psw-addr'}, CPU $info->{core})";
+}
+
 sub conf_has_serial {
     my ($conf) = @_;
 
@@ -4971,6 +4995,8 @@ my $fast_plug_option = {
     'name' => 1,
     'onboot' => 1,
     'protection' => 1,
+    # read when the guest enters a disabled wait
+    's390-shutdown-wait' => 1,
     # the line-mode console log unit of a running VM reads it from the config
     'sclplm-syslog' => 1,
     'shares' => 1,
@@ -6909,8 +6935,30 @@ sub _do_vm_stop {
     if (!$err) {
         $timeout = 60 if !defined($timeout);
 
+        # s390x: mainframe operating systems end their shutdown in a disabled wait, not by
+        # powering off (see PVE::QemuServer::DisabledWait)
+        my $check_wait = $shutdown && $conf && PVE::QemuServer::DisabledWait::applies($conf);
+        my $seen_wait = '';
+
         my $count = 0;
         while (($count < $timeout) && check_running($vmid, $nocheck)) {
+            if ($check_wait) {
+                my $info = eval { get_s390_disabled_wait($vmid, $conf) };
+                if ($info && $info->{'psw-addr'} ne $seen_wait) {
+                    $seen_wait = $info->{'psw-addr'};
+                    my $msg = s390_disabled_wait_message($info);
+                    if (PVE::QemuServer::DisabledWait::is_shutdown_wait($conf, $seen_wait, 1)) {
+                        print "$msg: shutdown complete, stopping QEMU\n";
+                        eval { mon_cmd($vmid, 'quit') };
+                        warn "QMP quit failed - $@" if $@;
+                        $check_wait = 0;
+                        $timeout = $count + 10 if $timeout < $count + 10;
+                    } else {
+                        print "$msg: not a shutdown wait code ('s390-shutdown-wait'),"
+                            . " still waiting\n";
+                    }
+                }
+            }
             $count++;
             sleep 1;
         }

@@ -5,11 +5,17 @@ no warnings 'portable'; # 64-bit hexadecimal literals
 
 use lib qw(..);
 
+# the shutdown tests below must not wait for real
+my $slept = 0;
+BEGIN { *CORE::GLOBAL::sleep = sub { $slept += $_[0] // 1; return $_[0] // 1; }; }
+
 use Test::MockModule;
 use Test::More;
 
 use PVE::JSONSchema;
+use PVE::QemuConfig;
 use PVE::QemuServer;
+use PVE::QemuServer::DisabledWait;
 
 # crash-information per QOM path, like QEMU reports it; CPUs without an entry did not crash
 my $crash_information;
@@ -174,6 +180,154 @@ is_deeply(
         eval { PVE::JSONSchema::validate($fields->{$key}, $schema) };
         is($@, '', "status field '$key' matches the API schema");
     }
+}
+
+# the wait state code: the rightmost three hexadecimal digits of the PSW address
+is(PVE::QemuServer::DisabledWait::wait_code('0000000000000ccc'), 'CCC', 'wait code CCC');
+is(PVE::QemuServer::DisabledWait::wait_code('00000000000a0961'), '961', 'wait code 961');
+is(PVE::QemuServer::DisabledWait::wait_code('0'), '000', 'wait code of a short address');
+
+is_deeply(
+    PVE::QemuServer::DisabledWait::parse_shutdown_wait(undef),
+    { codes => undef, guest => 0 },
+    'option not set: any code after a requested shutdown',
+);
+is_deeply(
+    PVE::QemuServer::DisabledWait::parse_shutdown_wait('codes=ccc;961;0A,guest=1'),
+    { codes => { CCC => 1, 961 => 1, '00A' => 1 }, guest => 1 },
+    'codes and guest',
+);
+eval { PVE::QemuServer::DisabledWait::parse_shutdown_wait('codes=1000') };
+like($@, qr/codes/, 'a wait code has at most three digits');
+ok(PVE::QemuServer::option_exists('s390-shutdown-wait'), "'s390-shutdown-wait' is a VM option");
+
+my $is_shutdown_wait = \&PVE::QemuServer::DisabledWait::is_shutdown_wait;
+my $zconf = { arch => 's390x', ostype => 'other' };
+ok($is_shutdown_wait->($zconf, '0000000000000ccc', 1), 'requested shutdown: any code by default');
+ok($is_shutdown_wait->($zconf, '0000000000000123', 1), 'requested shutdown: also a crash code');
+ok(!$is_shutdown_wait->($zconf, '0000000000000ccc', 0), 'no request, no guest option: no');
+ok(
+    !$is_shutdown_wait->({ %$zconf, ostype => 'l26' }, '0000000000000ccc', 1),
+    'Linux guest: a kernel panic, never a shutdown',
+);
+ok(
+    !$is_shutdown_wait->({ %$zconf, arch => 'x86_64' }, '0000000000000ccc', 1),
+    'not s390x: no',
+);
+{
+    my $conf = { %$zconf, 's390-shutdown-wait' => 'codes=ccc;961' };
+    ok($is_shutdown_wait->($conf, '0000000000000ccc', 1), 'listed code, requested');
+    ok($is_shutdown_wait->($conf, '0000000000000961', 1), 'other listed code, requested');
+    ok(!$is_shutdown_wait->($conf, '0000000000000123', 1), 'code not listed, requested: no');
+    ok(!$is_shutdown_wait->($conf, '0000000000000ccc', 0), 'listed code, no request: no');
+}
+{
+    my $conf = { %$zconf, 's390-shutdown-wait' => 'codes=ccc,guest=1' };
+    ok($is_shutdown_wait->($conf, '0000000000000ccc', 0), 'guest shut down with a listed code');
+    ok(!$is_shutdown_wait->($conf, '0000000000000123', 0), 'guest wait with another code: no');
+}
+
+# a shutdown requested through the host: QEMU of a VM in a disabled wait is quit
+{
+    my $vm_conf;
+    my $state; # 'running', 'guest-panicked', 'exited'
+    my $psw_addr;
+    my $panic_after; # query-status calls before the guest enters the disabled wait
+    my @cmds;
+    my $cleanup = 0;
+
+    my $config = Test::MockModule->new('PVE::QemuConfig');
+    $config->mock(
+        load_config => sub { return {%$vm_conf} },
+        check_lock => sub { },
+    );
+    my $guest_helpers = Test::MockModule->new('PVE::GuestHelpers');
+    $guest_helpers->mock(exec_hookscript => sub { });
+
+    $qemu_server->mock(
+        check_running => sub { return $state ne 'exited' ? 4711 : undef },
+        vm_stop_cleanup => sub { $cleanup++ },
+        mon_cmd => sub {
+            my ($vmid, $cmd, %params) = @_;
+            push @cmds, $cmd;
+            if ($cmd eq 'system_powerdown') {
+                return;
+            } elsif ($cmd eq 'query-status') {
+                $state = 'guest-panicked' if $state eq 'running' && $panic_after-- <= 0;
+                return { status => $state };
+            } elsif ($cmd eq 'query-cpus-fast') {
+                return cpu_list(2);
+            } elsif ($cmd eq 'qom-get') {
+                die "No crash occurred\n"
+                    if $state ne 'guest-panicked' || $params{path} !~ m/\[1\]$/;
+                return {
+                    type => 's390',
+                    core => 1,
+                    'psw-mask' => 0x0002000180000000,
+                    'psw-addr' => hex($psw_addr),
+                    reason => 'disabled-wait',
+                };
+            } elsif ($cmd eq 'quit') {
+                $state = 'exited';
+                return;
+            }
+            die "unexpected command '$cmd'\n";
+        },
+    );
+
+    my $run = sub {
+        my ($name, $conf, %opts) = @_;
+        $vm_conf = $conf;
+        $state = 'running';
+        $psw_addr = $opts{psw_addr} // 'ccc';
+        $panic_after = $opts{panic_after} // 2;
+        @cmds = ();
+        $cleanup = 0;
+        $slept = 0;
+
+        my $output = '';
+        open(my $fh, '>', \$output);
+        my $old = select($fh);
+        eval {
+            PVE::QemuServer::_do_vm_stop(
+                {}, 100, 0, 0, $opts{timeout} // 60, 1, $opts{force},
+            );
+        };
+        my $err = $@;
+        select($old);
+        close($fh);
+        return ($err, $output);
+    };
+
+    my ($err, $out) = $run->('default', $zconf);
+    is($err, '', 'requested shutdown, disabled wait: no error');
+    like(
+        $out,
+        qr/wait state code X'CCC' \(PSW 0002000180000000 0000000000000ccc, CPU 1\): shutdown complete/,
+        'requested shutdown, disabled wait: logs the PSW and the wait code',
+    );
+    is((grep { $_ eq 'quit' } @cmds), 1, 'requested shutdown, disabled wait: QEMU is quit');
+    is($cmds[0], 'system_powerdown', 'the shutdown is requested with system_powerdown');
+    is($cleanup, 1, 'requested shutdown, disabled wait: cleaned up');
+    ok($slept < 10, 'requested shutdown, disabled wait: no timeout');
+
+    ($err, $out) = $run->(
+        'code not listed',
+        { %$zconf, 's390-shutdown-wait' => 'codes=961' },
+        timeout => 5,
+    );
+    like($err, qr/got timeout/, 'code not listed: the shutdown times out as before');
+    like($out, qr/not a shutdown wait code/, 'code not listed: logged once');
+    is((grep { $_ eq 'quit' } @cmds), 0, 'code not listed: QEMU is not quit');
+
+    ($err, $out) = $run->('Linux', { %$zconf, ostype => 'l26' }, timeout => 5);
+    like($err, qr/got timeout/, 'Linux guest: a disabled wait does not end the shutdown');
+    is((grep { $_ eq 'query-status' } @cmds), 0, 'Linux guest: no status polling');
+
+    ($err, $out) = $run->('already waiting', $zconf, panic_after => 0);
+    is($err, '', 'VM already in a disabled wait: the shutdown stops it');
+
+    $qemu_server->unmock('check_running', 'vm_stop_cleanup');
 }
 
 done_testing();

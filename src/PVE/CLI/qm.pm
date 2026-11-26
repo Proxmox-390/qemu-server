@@ -36,6 +36,7 @@ use PVE::QemuServer::Drive qw(is_valid_drivename parse_drive print_drive);
 use PVE::QemuServer::Helpers;
 use PVE::QemuServer::Agent;
 use PVE::QemuServer::Console3270;
+use PVE::QemuServer::DisabledWait;
 use PVE::QemuServer::SclpLog;
 use PVE::QemuServer::ImportDisk;
 use PVE::QemuServer::Monitor qw(mon_cmd);
@@ -1259,6 +1260,76 @@ __PACKAGE__->register_method({
     },
 });
 
+__PACKAGE__->register_method({
+    name => 'disabled_wait',
+    path => 'disabled_wait',
+    method => 'POST',
+    protected => 1,
+    description => "s390x: called by qmeventd when the guest of a VM is in a disabled wait."
+        . " Stops the VM if the guest shut itself down ('s390-shutdown-wait' with 'guest').",
+    parameters => {
+        additionalProperties => 0,
+        properties => {
+            node => get_standard_option('pve-node'),
+            vmid => get_standard_option(
+                'pve-vmid',
+                { completion => \&PVE::QemuServer::complete_vmid_running },
+            ),
+        },
+    },
+    returns => { type => 'null' },
+    code => sub {
+        my ($param) = @_;
+
+        my $vmid = $param->{vmid};
+
+        # qmeventd ignores SIGCHLD, waiting for the worker and its commands needs it back
+        local $SIG{CHLD} = 'DEFAULT';
+
+        # most disabled waits do not stop the VM: decide that without the lock. A shutdown
+        # requested through the host holds the lock and handles the disabled wait itself.
+        my $conf = PVE::QemuConfig->load_config($vmid);
+        return if !PVE::QemuServer::DisabledWait::applies($conf);
+        my $opts =
+            PVE::QemuServer::DisabledWait::parse_shutdown_wait($conf->{'s390-shutdown-wait'});
+        return if !$opts->{guest};
+
+        my $info = PVE::QemuServer::get_s390_disabled_wait($vmid, $conf) or return;
+        return
+            if !PVE::QemuServer::DisabledWait::is_shutdown_wait($conf, $info->{'psw-addr'}, 0);
+
+        my $rpcenv = PVE::RPCEnvironment::get();
+        my $worker = sub {
+            PVE::QemuConfig->lock_config(
+                $vmid,
+                sub {
+                    $conf = PVE::QemuConfig->load_config($vmid);
+                    return if !PVE::QemuServer::check_running($vmid);
+
+                    # the guest may have been reset or loaded again in the meantime
+                    $info = PVE::QemuServer::get_s390_disabled_wait($vmid, $conf);
+                    return if !$info;
+                    return
+                        if !PVE::QemuServer::DisabledWait::is_shutdown_wait(
+                            $conf, $info->{'psw-addr'}, 0,
+                        );
+                    if ($conf->{lock}) {
+                        print "VM is locked ($conf->{lock}), not stopping it\n";
+                        return;
+                    }
+
+                    print PVE::QemuServer::s390_disabled_wait_message($info)
+                        . ": the guest shut down, stopping the VM\n";
+                    PVE::QemuServer::_do_vm_stop(PVE::Storage::config(), $vmid, 0, 0, undef, 0, 1);
+                },
+            );
+        };
+        $rpcenv->fork_worker('qmshutdown', $vmid, $rpcenv->get_user(), $worker);
+
+        return;
+    },
+});
+
 # The options of the import that do not exist on an s390x host, left out of 'qm import' there:
 # the options s390x VMs cannot have (PVE::QemuServer::assert_s390x_option_supported()) and ACPI,
 # which s390x does not have. Foreign architectures are not offered on s390x.
@@ -1606,6 +1677,8 @@ our $cmddef = {
     'export-ova' => ['PVE::API2::Qemu', 'export_ova', ['vmid', 'storage'], {%node}, $upid_exit],
 
     cleanup => [__PACKAGE__, 'cleanup', ['vmid', 'clean-shutdown', 'guest-requested'], {%node}],
+
+    'disabled-wait' => [__PACKAGE__, 'disabled_wait', ['vmid'], {%node}],
 
     cloudinit => {
         dump => [

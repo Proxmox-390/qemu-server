@@ -13,6 +13,7 @@ SOURCES=Agent.pm	\
 	CPUConfig.pm	\
 	CPUFlags.pm	\
 	DASD.pm		\
+	DisabledWait.pm	\
 	DBusVMState.pm	\
 	Drive.pm	\
 	DriveDevice.pm	\
