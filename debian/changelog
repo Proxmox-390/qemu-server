@@ -1,3 +1,10 @@
+qemu-server (9.2.24+s390x5) trixie; urgency=medium
+
+  * s390x: tape: parse the volume sizes to bytes and store tape drives in a
+    canonical form ('capacity=64M' was written back as 64 bytes).
+
+ -- Yvan Janssens <yvanj@cyber.gent>  Thu, 26 Nov 2026 10:13:07 +0000
+
 qemu-server (9.2.24+s390x4) trixie; urgency=medium
 
   * s390x: api: setting the medium of a tape drive of a running VM again
