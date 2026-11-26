@@ -1,3 +1,15 @@
+qemu-server (9.2.24+s390x8) trixie; urgency=medium
+
+  * s390x: a configured CCW device number (3270 terminal, DASD, tape drive,
+    qeth adapter) may be in 0.0.0000-0.0.00ff, where qemu-server puts the
+    VirtIO devices, unless a VirtIO device of the VM uses it: the I/O
+    configurations of mainframe operating systems often have their local
+    3270 terminals there. A collision is refused when the config is
+    changed and at start. The suggested device numbers stay outside that
+    range.
+
+ -- Yvan Janssens <yvanj@cyber.gent>  Thu, 26 Nov 2026 21:05:46 +0100
+
 qemu-server (9.2.24+s390x7) trixie; urgency=medium
 
   * s390x: a shutdown of a guest that is not Linux ends when the guest
