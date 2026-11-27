@@ -1,3 +1,22 @@
+qemu-server (9.2.24+s390x11) trixie; urgency=medium
+
+  * s390x: IUCV network devices, provided by QEMU as z/VM's CP does:
+    'iucv-net', a point-to-point IP link with the protocol of Linux netiucv
+    on a bridge or user networking (iucv-peer, iucv-ip, iucv-gw, mtu), and
+    'iucv-tcpip', the socket interface of a TCP/IP service machine with a
+    TCP/IP stack of its own on a tap of the bridge, like other NICs: it owns
+    the guest's address on that network (no NAT, no port forwards). Its
+    network configuration is required: iucv-ip, iucv-gw, iucv-dns (up to
+    three name servers), iucv-hostname and iucv-domain. VLAN tag, firewall,
+    rate, link_down, MAC address and mtu apply; one iucv-tcpip device per
+    VM. The configuration is checked when it is set and at start.
+  * s390x: new VM option 'iucv': what the IUCV instruction does without
+    IUCV network devices, and the user ID of the VM.
+  * IUCV devices are not hot-pluggable and block live migration and
+    snapshots with RAM.
+
+ -- Yvan Janssens <yvanj@cyber.gent>  Fri, 27 Nov 2026 11:41:18 +0000
+
 qemu-server (9.2.24+s390x8) trixie; urgency=medium
 
   * s390x: a configured CCW device number (3270 terminal, DASD, tape drive,
